@@ -4,9 +4,7 @@ import { Express, Request } from "express";
 import session from "express-session";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
-import MongoStore from "connect-mongo";
 import { User } from "./models"; 
-import { mongoClient } from "./db";
 import { log } from "./vite";
 
 const scryptAsync = promisify(scrypt);
@@ -41,17 +39,13 @@ async function comparePasswords(supplied: string, stored: string) {
 }
 
 export function setupAuth(app: Express) {
-  // Configure session
-  const sessionStore = MongoStore.create({ 
-    mongoUrl: process.env.DATABASE_URI || 'mongodb://localhost:27017/chat-app',
-    collectionName: 'sessions'
-  });
+  // Using in-memory session store for simplicity
+  // We'll implement MongoDB store later when other issues are fixed
 
   const sessionSettings: session.SessionOptions = {
     secret: process.env.SESSION_SECRET || 'chat-app-secret-key',
     resave: false,
     saveUninitialized: false,
-    store: sessionStore,
     cookie: {
       maxAge: 1000 * 60 * 60 * 24 * 7, // 1 week
       httpOnly: true,
@@ -106,13 +100,16 @@ export function setupAuth(app: Express) {
 
   // Registration route
   app.post("/api/register", async (req, res, next) => {
-    log(`Registration attempt: ${JSON.stringify(req.body)}`, 'auth');
+    log(`Registration attempt: ${JSON.stringify({ ...req.body, password: '***REDACTED***' })}`, 'auth');
     
     try {
+      console.log('Register endpoint called with body:', { ...req.body, password: '***REDACTED***' });
+      
       // Check if user already exists
       const existingUser = await User.findOne({ username: req.body.username });
       if (existingUser) {
         log(`Registration failed: Username ${req.body.username} already exists`, 'auth');
+        console.log(`Registration failed: Username ${req.body.username} already exists`);
         return res.status(400).json({ message: "Username already exists" });
       }
 
@@ -121,12 +118,15 @@ export function setupAuth(app: Express) {
       
       if (!username || !password || !displayName) {
         log(`Registration failed: Missing required fields`, 'auth');
+        console.log(`Registration failed: Missing required fields:`, 
+          { username: !!username, password: !!password, displayName: !!displayName });
         return res.status(400).json({ 
           message: "Username, password, and display name are required" 
         });
       }
       
       log(`Creating new user: ${username}`, 'auth');
+      console.log(`Creating new user: ${username}`);
       const hashedPassword = await hashPassword(password);
       
       const user = await User.create({
@@ -137,11 +137,13 @@ export function setupAuth(app: Express) {
       });
       
       log(`User created successfully: ${username}`, 'auth');
+      console.log(`User created successfully:`, { id: user._id, username });
 
       // Log in the new user
       req.login(user, (err) => {
         if (err) {
           log(`Session error during registration: ${err}`, 'auth');
+          console.error(`Session error during registration:`, err);
           return next(err);
         }
         
@@ -150,11 +152,13 @@ export function setupAuth(app: Express) {
         const { password: _, ...userWithoutPassword } = userResponse;
         
         log(`Registration successful: ${username}`, 'auth');
+        console.log(`Registration completed successfully for: ${username}`);
         res.status(201).json(userWithoutPassword);
       });
-    } catch (error) {
+    } catch (error: any) {
       log(`Registration error: ${error}`, 'auth');
-      res.status(500).json({ message: "Registration failed" });
+      console.error(`Registration error:`, error);
+      res.status(500).json({ message: `Registration failed: ${error.message || 'Unknown error'}` });
     }
   });
 
