@@ -106,10 +106,13 @@ export function setupAuth(app: Express) {
 
   // Registration route
   app.post("/api/register", async (req, res, next) => {
+    log(`Registration attempt: ${JSON.stringify(req.body)}`, 'auth');
+    
     try {
       // Check if user already exists
       const existingUser = await User.findOne({ username: req.body.username });
       if (existingUser) {
+        log(`Registration failed: Username ${req.body.username} already exists`, 'auth');
         return res.status(400).json({ message: "Username already exists" });
       }
 
@@ -117,26 +120,36 @@ export function setupAuth(app: Express) {
       const { username, password, displayName } = req.body;
       
       if (!username || !password || !displayName) {
+        log(`Registration failed: Missing required fields`, 'auth');
         return res.status(400).json({ 
           message: "Username, password, and display name are required" 
         });
       }
       
+      log(`Creating new user: ${username}`, 'auth');
+      const hashedPassword = await hashPassword(password);
+      
       const user = await User.create({
         username,
-        password: await hashPassword(password),
+        password: hashedPassword,
         displayName,
         status: 'online'
       });
+      
+      log(`User created successfully: ${username}`, 'auth');
 
       // Log in the new user
       req.login(user, (err) => {
-        if (err) return next(err);
+        if (err) {
+          log(`Session error during registration: ${err}`, 'auth');
+          return next(err);
+        }
         
         // Return user without password
         const userResponse = user.toObject();
         const { password: _, ...userWithoutPassword } = userResponse;
         
+        log(`Registration successful: ${username}`, 'auth');
         res.status(201).json(userWithoutPassword);
       });
     } catch (error) {
@@ -147,21 +160,41 @@ export function setupAuth(app: Express) {
 
   // Login route
   app.post("/api/login", (req, res, next) => {
+    log(`Login attempt: ${JSON.stringify(req.body)}`, 'auth');
+    
     passport.authenticate("local", (err: any, user: any, info: any) => {
-      if (err) return next(err);
-      if (!user) return res.status(401).json({ message: info?.message || "Login failed" });
+      if (err) {
+        log(`Login error: ${err}`, 'auth');
+        return next(err);
+      }
+      
+      if (!user) {
+        log(`Login failed: ${info?.message || "Unknown reason"}`, 'auth');
+        return res.status(401).json({ message: info?.message || "Login failed" });
+      }
+      
+      log(`User authenticated: ${user.username}`, 'auth');
       
       req.login(user, async (err) => {
-        if (err) return next(err);
+        if (err) {
+          log(`Session error: ${err}`, 'auth');
+          return next(err);
+        }
         
-        // Update user status to online
-        await User.findByIdAndUpdate(user._id, { status: 'online' });
-        
-        // Return user without password
-        const userResponse = user.toObject();
-        const { password: _, ...userWithoutPassword } = userResponse;
-        
-        res.json(userWithoutPassword);
+        try {
+          // Update user status to online
+          await User.findByIdAndUpdate(user._id, { status: 'online' });
+          
+          // Return user without password
+          const userResponse = user.toObject ? user.toObject() : user;
+          const { password: _, ...userWithoutPassword } = userResponse;
+          
+          log(`Login successful: ${user.username}`, 'auth');
+          res.json(userWithoutPassword);
+        } catch (error) {
+          log(`Error after login: ${error}`, 'auth');
+          next(error);
+        }
       });
     })(req, res, next);
   });

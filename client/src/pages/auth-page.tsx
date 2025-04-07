@@ -44,6 +44,7 @@ export default function AuthPage() {
     resolver: zodResolver(registerSchema),
     defaultValues: {
       username: "",
+      displayName: "",
       password: "",
       confirmPassword: "",
     },
@@ -144,6 +145,24 @@ export default function AuthPage() {
                                 <User size={16} />
                               </span>
                               <Input placeholder="Choose a username" className="pl-10" {...field} />
+                            </div>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={registerForm.control}
+                      name="displayName"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Display Name</FormLabel>
+                          <FormControl>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">
+                                <User size={16} />
+                              </span>
+                              <Input placeholder="Enter your display name" className="pl-10" {...field} />
                             </div>
                           </FormControl>
                           <FormMessage />
