@@ -13,9 +13,15 @@ import {
   type InsertChatMember 
 } from "@shared/schema";
 import session from "express-session";
+import type { Store } from 'express-session';
 import createMemoryStore from "memorystore";
+import connectPg from "connect-pg-simple";
+import { db } from "./db";
+import { eq, and, desc, or, not, sql } from "drizzle-orm";
+import { pool } from "./db";
 
 const MemoryStore = createMemoryStore(session);
+const PostgresSessionStore = connectPg(session);
 
 // Interface for storage operations
 export interface IStorage {
@@ -39,162 +45,161 @@ export interface IStorage {
   markMessagesAsRead(chatId: number, userId: number): Promise<void>;
   
   // Session store
-  sessionStore: session.SessionStore;
+  sessionStore: Store;
 }
 
-// In-memory implementation
-export class MemStorage implements IStorage {
-  private users: Map<number, User>;
-  private chats: Map<number, Chat>;
-  private messages: Map<number, Message>;
-  private chatMembers: Map<number, ChatMember>;
-  private currentUserId: number;
-  private currentChatId: number;
-  private currentMessageId: number;
-  private currentChatMemberId: number;
-  sessionStore: session.SessionStore;
-
+// Database implementation
+export class DatabaseStorage implements IStorage {
+  sessionStore: Store;
+  
   constructor() {
-    this.users = new Map();
-    this.chats = new Map();
-    this.messages = new Map();
-    this.chatMembers = new Map();
-    this.currentUserId = 1;
-    this.currentChatId = 1;
-    this.currentMessageId = 1;
-    this.currentChatMemberId = 1;
-    this.sessionStore = new MemoryStore({
-      checkPeriod: 86400000, // Prune expired entries every day
+    this.sessionStore = new PostgresSessionStore({
+      pool,
+      createTableIfMissing: true
     });
   }
-
+  
   // User operations
   async getUser(id: number): Promise<User | undefined> {
-    return this.users.get(id);
-  }
-
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
-  }
-
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = this.currentUserId++;
-    const user: User = { 
-      ...insertUser, 
-      id, 
-      status: "online", 
-      lastActive: new Date(),
-      avatarUrl: null 
-    };
-    this.users.set(id, user);
+    const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
   }
-
-  async updateUserStatus(userId: number, status: string): Promise<void> {
-    const user = await this.getUser(userId);
-    if (user) {
-      user.status = status;
-      user.lastActive = new Date();
-      this.users.set(userId, user);
-    }
+  
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.username, username));
+    return user;
   }
-
+  
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const [user] = await db.insert(users)
+      .values({
+        ...insertUser,
+        status: "online",
+        lastActive: new Date()
+      })
+      .returning();
+    return user;
+  }
+  
+  async updateUserStatus(userId: number, status: string): Promise<void> {
+    await db.update(users)
+      .set({
+        status,
+        lastActive: new Date()
+      })
+      .where(eq(users.id, userId));
+  }
+  
   // Chat operations
   async getChatsForUser(userId: number): Promise<Chat[]> {
-    // Get chat IDs that the user is a member of
-    const memberChatIds = Array.from(this.chatMembers.values())
-      .filter(member => member.userId === userId)
-      .map(member => member.chatId);
+    // Get chat ids that the user is a member of
+    const chatMembersList = await db.select({
+      chatId: chatMembers.chatId
+    })
+    .from(chatMembers)
+    .where(eq(chatMembers.userId, userId));
     
-    // Get the chat objects
-    const userChats = Array.from(this.chats.values())
-      .filter(chat => memberChatIds.includes(chat.id));
+    const chatIds = chatMembersList.map(cm => cm.chatId);
+    
+    if (chatIds.length === 0) {
+      return [];
+    }
+    
+    // Get the chats using proper SQL construction
+    const userChats = await db.select()
+      .from(chats)
+      .where(
+        sql`${chats.id} IN (${sql.join(chatIds.map(id => sql`${id}`), sql`, `)})`
+      );
     
     return userChats;
   }
-
+  
   async createChat(insertChat: InsertChat): Promise<Chat> {
-    const id = this.currentChatId++;
-    const chat: Chat = { 
-      ...insertChat, 
-      id, 
-      status: "online", 
-      avatarUrl: null,
-      lastMessage: null,
-      lastMessageTime: null
-    };
-    this.chats.set(id, chat);
+    const [chat] = await db.insert(chats)
+      .values({
+        ...insertChat,
+        status: "online"
+      })
+      .returning();
+    
     return chat;
   }
-
+  
   async addUserToChat(chatId: number, userId: number, isAdmin: boolean = false): Promise<void> {
-    const chatMember: ChatMember = {
-      id: this.currentChatMemberId++,
-      chatId,
-      userId,
-      joinedAt: new Date(),
-      isAdmin
-    };
-    this.chatMembers.set(chatMember.id, chatMember);
+    await db.insert(chatMembers)
+      .values({
+        chatId,
+        userId,
+        isAdmin,
+        joinedAt: new Date()
+      });
   }
-
+  
   async isUserInChat(chatId: number, userId: number): Promise<boolean> {
-    return Array.from(this.chatMembers.values()).some(
-      member => member.chatId === chatId && member.userId === userId
-    );
+    const [member] = await db.select()
+      .from(chatMembers)
+      .where(
+        and(
+          eq(chatMembers.chatId, chatId),
+          eq(chatMembers.userId, userId)
+        )
+      );
+    
+    return !!member;
   }
-
+  
   async getChatMembers(chatId: number): Promise<ChatMember[]> {
-    return Array.from(this.chatMembers.values()).filter(
-      member => member.chatId === chatId
-    );
+    return db.select()
+      .from(chatMembers)
+      .where(eq(chatMembers.chatId, chatId));
   }
-
+  
   async updateChatLastMessage(chatId: number, message: string, timestamp: Date): Promise<void> {
-    const chat = this.chats.get(chatId);
-    if (chat) {
-      chat.lastMessage = message;
-      chat.lastMessageTime = timestamp;
-      this.chats.set(chatId, chat);
-    }
+    await db.update(chats)
+      .set({
+        lastMessage: message,
+        lastMessageTime: timestamp
+      })
+      .where(eq(chats.id, chatId));
   }
-
+  
   // Message operations
   async getMessagesForChat(chatId: number): Promise<Message[]> {
-    return Array.from(this.messages.values())
-      .filter(message => message.chatId === chatId)
-      .sort((a, b) => {
-        const dateA = new Date(a.timestamp);
-        const dateB = new Date(b.timestamp);
-        return dateA.getTime() - dateB.getTime();
-      });
+    return db.select()
+      .from(messages)
+      .where(eq(messages.chatId, chatId))
+      .orderBy(messages.timestamp);
   }
-
+  
   async createMessage(insertMessage: InsertMessage & { senderName?: string, senderAvatar?: string | null }): Promise<Message> {
-    const id = this.currentMessageId++;
-    const message: Message = {
-      ...insertMessage,
-      id,
-      timestamp: insertMessage.timestamp || new Date(),
-      status: insertMessage.status || "sent",
-      senderName: insertMessage.senderName || "",
-      senderAvatar: insertMessage.senderAvatar || null
-    };
-    this.messages.set(id, message);
+    const [message] = await db.insert(messages)
+      .values({
+        chatId: insertMessage.chatId,
+        senderId: insertMessage.senderId,
+        content: insertMessage.content,
+        status: "sent",
+        timestamp: new Date(),
+        senderName: insertMessage.senderName || "",
+        senderAvatar: insertMessage.senderAvatar
+      })
+      .returning();
+    
     return message;
   }
-
+  
   async markMessagesAsRead(chatId: number, userId: number): Promise<void> {
-    // Update status of all messages in chat not sent by this user
-    Array.from(this.messages.values())
-      .filter(message => message.chatId === chatId && message.senderId !== userId)
-      .forEach(message => {
-        message.status = "read";
-        this.messages.set(message.id, message);
-      });
+    await db.update(messages)
+      .set({
+        status: "read"
+      })
+      .where(
+        and(
+          eq(messages.chatId, chatId),
+          not(eq(messages.senderId, userId)) // Only mark messages from other users
+        )
+      );
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
