@@ -29,21 +29,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading,
   } = useQuery<User | null, Error>({
     queryKey: ["/api/user"],
-    queryFn: getQueryFn({ on401: "returnNull" }),
+    queryFn: async () => {
+      try {
+        const response = await fetch("/api/user", {
+          credentials: "include" 
+        });
+        
+        if (response.status === 401) {
+          console.log("Not authenticated, returning null");
+          return null;
+        }
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error("Error fetching user:", errorText);
+          throw new Error(errorText || `Error ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log("User data:", data);
+        return data;
+      } catch (error) {
+        console.error("Error in user fetch:", error);
+        throw error;
+      }
+    },
   });
 
   const loginMutation = useMutation({
     mutationFn: async (credentials: LoginData) => {
-      try {
-        console.log("Login attempt:", credentials.username);
-        const res = await apiRequest("POST", "/api/login", credentials);
-        const data = await res.json();
-        console.log("Login response:", data);
-        return data;
-      } catch (error) {
-        console.error("Login error:", error);
-        throw error;
+      console.log("Login attempt:", credentials.username);
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(credentials),
+        credentials: "include",
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.message || `Error: ${response.status}`;
+        console.error("Login error:", errorMessage);
+        throw new Error(errorMessage);
       }
+      
+      const data = await response.json();
+      console.log("Login response:", data);
+      return data;
     },
     onSuccess: (user: User) => {
       queryClient.setQueryData(["/api/user"], user);
@@ -63,16 +97,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const registerMutation = useMutation({
     mutationFn: async (credentials: InsertUser) => {
-      try {
-        console.log("Register attempt:", credentials);
-        const res = await apiRequest("POST", "/api/register", credentials);
-        const data = await res.json();
-        console.log("Register response:", data);
-        return data;
-      } catch (error) {
-        console.error("Register error:", error);
-        throw error;
+      console.log("Register attempt:", credentials);
+      const response = await fetch("/api/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(credentials),
+        credentials: "include",
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.message || `Error: ${response.status}`;
+        console.error("Register error:", errorMessage);
+        throw new Error(errorMessage);
       }
+      
+      const data = await response.json();
+      console.log("Register response:", data);
+      return data;
     },
     onSuccess: (user: User) => {
       queryClient.setQueryData(["/api/user"], user);
@@ -92,7 +136,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logoutMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/logout");
+      const response = await fetch("/api/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.message || `Error: ${response.status}`;
+        console.error("Logout error:", errorMessage);
+        throw new Error(errorMessage);
+      }
     },
     onSuccess: () => {
       queryClient.setQueryData(["/api/user"], null);

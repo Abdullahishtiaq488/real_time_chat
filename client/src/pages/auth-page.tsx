@@ -58,12 +58,22 @@ export default function AuthPage() {
   }, [user, setLocation]);
 
   function onLoginSubmit(values: z.infer<typeof loginSchema>) {
-    loginMutation.mutate(values);
+    console.log("Login form submitted:", values);
+    try {
+      loginMutation.mutate(values);
+    } catch (error) {
+      console.error("Login mutation error:", error);
+    }
   }
 
   function onRegisterSubmit(values: z.infer<typeof registerSchema>) {
-    const { confirmPassword, ...userData } = values;
-    registerMutation.mutate(userData);
+    console.log("Register form submitted:", values);
+    try {
+      const { confirmPassword, ...userData } = values;
+      registerMutation.mutate(userData);
+    } catch (error) {
+      console.error("Register mutation error:", error);
+    }
   }
 
   return (
@@ -82,7 +92,7 @@ export default function AuthPage() {
               
               <TabsContent value="login">
                 <Form {...loginForm}>
-                  <form onSubmit={loginForm.handleSubmit(onLoginSubmit)} className="space-y-4">
+                  <form onSubmit={(e) => { e.preventDefault(); }} className="space-y-4">
                     <FormField
                       control={loginForm.control}
                       name="username"
@@ -120,9 +130,10 @@ export default function AuthPage() {
                       )}
                     />
                     <Button 
-                      type="submit" 
+                      type="button" 
                       className="w-full" 
                       disabled={loginMutation.isPending}
+                      onClick={() => loginForm.handleSubmit(onLoginSubmit)()}
                     >
                       {loginMutation.isPending ? "Logging in..." : "Sign in"}
                     </Button>
@@ -132,7 +143,7 @@ export default function AuthPage() {
               
               <TabsContent value="register">
                 <Form {...registerForm}>
-                  <form onSubmit={registerForm.handleSubmit(onRegisterSubmit)} className="space-y-4">
+                  <form onSubmit={(e) => { e.preventDefault(); }} className="space-y-4">
                     <FormField
                       control={registerForm.control}
                       name="username"
@@ -206,9 +217,10 @@ export default function AuthPage() {
                       )}
                     />
                     <Button 
-                      type="submit" 
+                      type="button" 
                       className="w-full" 
                       disabled={registerMutation.isPending}
+                      onClick={() => registerForm.handleSubmit(onRegisterSubmit)()}
                     >
                       {registerMutation.isPending ? "Creating account..." : "Create account"}
                     </Button>
