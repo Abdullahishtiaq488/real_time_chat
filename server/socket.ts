@@ -1,9 +1,10 @@
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { User, Message, Chat, ChatMember } from './models';
 import { log } from './vite';
 
-// Define UserWebSocket interface for type safety
-interface UserWebSocket extends WebSocket {
+// Define CustomWebSocket type for type safety
+// This is a more accurate representation of what we're using from the ws library
+type UserWebSocket = WebSocket & {
   userId?: string;
   username?: string;
   isAlive?: boolean;
@@ -242,7 +243,8 @@ export function setupSocketHandlers(wss: WebSocketServer) {
       userId: { $ne: userId }
     });
     
-    const userIds = [...new Set(chatMembers.map(cm => cm.userId))];
+    // Create array of unique user IDs
+    const userIds = Array.from(new Set(chatMembers.map(cm => cm.userId)));
     
     // Broadcast to all connected clients who share a chat with this user
     wss.clients.forEach((client: UserWebSocket) => {

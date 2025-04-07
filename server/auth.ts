@@ -75,7 +75,9 @@ export function setupAuth(app: Express) {
           return done(null, false, { message: 'Invalid username or password' });
         }
         
-        return done(null, user);
+        // Convert mongoose document to plain object
+        const userObj = user.toObject();
+        return done(null, userObj);
       } catch (err) {
         return done(err);
       }
@@ -91,7 +93,12 @@ export function setupAuth(app: Express) {
   passport.deserializeUser(async (id: string, done) => {
     try {
       const user = await User.findById(id).select('-password');
-      done(null, user);
+      if (!user) {
+        return done(null, null);
+      }
+      // Convert mongoose document to plain object
+      const userObj = user.toObject();
+      done(null, userObj);
     } catch (err) {
       done(err);
     }
@@ -128,9 +135,9 @@ export function setupAuth(app: Express) {
         
         // Return user without password
         const userResponse = user.toObject();
-        delete userResponse.password;
+        const { password: _, ...userWithoutPassword } = userResponse;
         
-        res.status(201).json(userResponse);
+        res.status(201).json(userWithoutPassword);
       });
     } catch (error) {
       log(`Registration error: ${error}`, 'auth');
@@ -140,7 +147,7 @@ export function setupAuth(app: Express) {
 
   // Login route
   app.post("/api/login", (req, res, next) => {
-    passport.authenticate("local", (err, user, info) => {
+    passport.authenticate("local", (err: any, user: any, info: any) => {
       if (err) return next(err);
       if (!user) return res.status(401).json({ message: info?.message || "Login failed" });
       
@@ -152,9 +159,9 @@ export function setupAuth(app: Express) {
         
         // Return user without password
         const userResponse = user.toObject();
-        delete userResponse.password;
+        const { password: _, ...userWithoutPassword } = userResponse;
         
-        res.json(userResponse);
+        res.json(userWithoutPassword);
       });
     })(req, res, next);
   });

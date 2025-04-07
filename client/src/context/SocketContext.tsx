@@ -40,8 +40,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // Get the protocol and host for WebSocket connection
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws`;
+    console.log("Connecting to WebSocket:", wsUrl);
+    
+    // Create new WebSocket connection
     const newSocket = new WebSocket(wsUrl);
 
     setSocket(newSocket);
