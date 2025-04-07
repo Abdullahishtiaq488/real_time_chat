@@ -19,6 +19,7 @@ export default function MessageItem({ message, isOwnMessage }: MessageItemProps)
 
   const formatTime = (timestamp: string | Date | null) => {
     if (!timestamp) return "";
+    // Use createdAt for MongoDB compatibility
     const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
     return format(date, "h:mm a");
   };
@@ -64,24 +65,17 @@ export default function MessageItem({ message, isOwnMessage }: MessageItemProps)
     >
       {!isOwnMessage && (
         <div className="relative mr-2 flex-shrink-0">
-          {message.senderAvatar ? (
-            <img 
-              src={message.senderAvatar} 
-              alt={`${message.senderName} avatar`} 
-              className="h-8 w-8 rounded-full object-cover shadow-sm border border-gray-100"
-            />
-          ) : (
-            <div className="h-8 w-8 bg-gradient-to-br from-gray-200 to-gray-300 rounded-full flex items-center justify-center uppercase text-gray-600 shadow-sm">
-              {message.senderName?.charAt(0) || "?"}
-            </div>
-          )}
+          {/* Using default avatar since we don't have sender avatar in MongoDB schema */}
+          <div className="h-8 w-8 bg-gradient-to-br from-gray-200 to-gray-300 rounded-full flex items-center justify-center uppercase text-gray-600 shadow-sm">
+            {"?"}
+          </div>
         </div>
       )}
       
       <div className={`max-w-xs md:max-w-md ${isOwnMessage ? 'text-right' : ''}`}>
-        {!isOwnMessage && message.senderName && (
+        {!isOwnMessage && (
           <div className="ml-1 mb-1">
-            <span className="text-xs font-medium text-gray-700">{message.senderName}</span>
+            <span className="text-xs font-medium text-gray-700">User</span>
           </div>
         )}
         
@@ -103,13 +97,11 @@ export default function MessageItem({ message, isOwnMessage }: MessageItemProps)
         
         <div className={`flex items-center ${isOwnMessage ? 'justify-end' : 'justify-start'} space-x-1 mt-1 px-1`}>
           <span className="text-xs text-gray-500 opacity-70 group-hover:opacity-100">
-            {formatTime(message.timestamp)}
+            {formatTime(message.createdAt || null)}
           </span>
-          {isOwnMessage && message.status && (
+          {isOwnMessage && (
             <div className="flex items-center">
-              <CheckCheck className={`h-3.5 w-3.5 ${
-                message.status === 'read' ? 'text-blue-500' : 'text-gray-400'
-              }`} />
+              <CheckCheck className={`h-3.5 w-3.5 text-gray-400`} />
             </div>
           )}
         </div>

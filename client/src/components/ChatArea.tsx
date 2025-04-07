@@ -49,8 +49,8 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
   // Load messages when chat changes
   useEffect(() => {
     if (currentChat) {
-      loadMessages(currentChat.id.toString());
-      markAsRead(currentChat.id.toString());
+      loadMessages(currentChat._id.toString());
+      markAsRead(currentChat._id.toString());
     }
   }, [currentChat, loadMessages, markAsRead]);
 
@@ -66,13 +66,13 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
     let typingTimeout: NodeJS.Timeout;
     
     if (isTyping) {
-      startTyping(currentChat.id.toString());
+      startTyping(currentChat._id.toString());
       typingTimeout = setTimeout(() => {
         setIsTyping(false);
-        stopTyping(currentChat.id.toString());
+        stopTyping(currentChat._id.toString());
       }, 3000);
     } else {
-      stopTyping(currentChat.id.toString());
+      stopTyping(currentChat._id.toString());
     }
     
     return () => {
@@ -91,14 +91,14 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
 
   // Group messages by date
   const getGroupedMessages = () => {
-    if (!currentChat || !messages[currentChat.id.toString()]) return [];
+    if (!currentChat || !messages[currentChat._id.toString()]) return [];
     
-    const chatMessages = messages[currentChat.id.toString()];
+    const chatMessages = messages[currentChat._id.toString()];
     const groupedMessages: { date: string; messages: Message[] }[] = [];
     
     chatMessages.forEach(message => {
-      // Handle the case where timestamp might be null
-      const timestamp = message.timestamp ? new Date(message.timestamp) : new Date();
+      // Handle the case where createdAt might be null
+      const timestamp = message.createdAt ? new Date(message.createdAt) : new Date();
       const messageDate = formatRelative(timestamp, new Date()).split(" at ")[0];
       
       const existingGroup = groupedMessages.find(group => group.date === messageDate);
@@ -129,7 +129,7 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
     
     try {
       setIsSending(true);
-      await sendMessage(currentChat.id.toString(), messageInput.trim());
+      await sendMessage(currentChat._id.toString(), messageInput.trim());
       setMessageInput("");
       setIsTyping(false);
       
@@ -178,7 +178,7 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
   }
 
   const groupedMessages = getGroupedMessages();
-  const chatTypingUsers = typingUsers[currentChat.id] || [];
+  const chatTypingUsers = typingUsers[currentChat._id] || [];
   const isOtherUserTyping = chatTypingUsers.length > 0;
 
   return (
@@ -209,10 +209,7 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
                 {currentChat.name.charAt(0)}
               </div>
             )}
-            <div className={`absolute bottom-0 right-0 h-3 w-3 rounded-full ${
-              currentChat.status === 'online' ? 'bg-green-500' :
-              currentChat.status === 'away' ? 'bg-yellow-500' : 'bg-gray-400'
-            } border-2 border-white`}></div>
+            <div className={`absolute bottom-0 right-0 h-3 w-3 rounded-full bg-gray-400 border-2 border-white`}></div>
           </div>
           <div className="ml-3">
             <p className="text-sm font-semibold text-gray-900 truncate max-w-[150px]">{currentChat.name}</p>
@@ -220,8 +217,7 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
               {isOtherUserTyping ? (
                 <span className="text-primary animate-pulse">typing...</span>
               ) : (
-                currentChat.status === 'online' ? 'Online' : 
-                currentChat.status === 'away' ? 'Away' : 'Offline'
+                'Offline'
               )}
             </p>
           </div>
@@ -282,9 +278,9 @@ export default function ChatArea({ className = "", onBackClick }: ChatAreaProps)
                 
                 {group.messages.map((message) => (
                   <MessageItem 
-                    key={message.id}
+                    key={message._id}
                     message={message}
-                    isOwnMessage={message.senderId === user?.id}
+                    isOwnMessage={message.senderId === user?._id}
                   />
                 ))}
               </div>

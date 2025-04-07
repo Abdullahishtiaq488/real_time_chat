@@ -1,225 +1,265 @@
-import { WebSocketServer, WebSocket } from "ws";
-import { IStorage } from "./storage";
+import { WebSocketServer } from 'ws';
+import { User, Message, Chat, ChatMember } from './models';
+import { log } from './vite';
 
-// Extended WebSocket with user information
+// Define UserWebSocket interface for type safety
 interface UserWebSocket extends WebSocket {
-  userId?: number;
+  userId?: string;
   username?: string;
   isAlive?: boolean;
 }
 
-export function setupSocketHandlers(wss: WebSocketServer, storage: IStorage) {
-  // Store connected clients by userId
-  const clients = new Map<number, UserWebSocket>();
-  
-  // Check connections periodically
+// Set up WebSocket handlers
+export function setupSocketHandlers(wss: WebSocketServer) {
+  // Ping clients every 30 seconds to keep connections alive
   const interval = setInterval(() => {
     wss.clients.forEach((ws: UserWebSocket) => {
       if (ws.isAlive === false) return ws.terminate();
       
       ws.isAlive = false;
-      ws.ping();
+      ws.send(JSON.stringify({ type: 'ping' }));
     });
   }, 30000);
-  
+
+  // Clean up interval on server close
   wss.on('close', () => {
     clearInterval(interval);
   });
 
+  // Handle new connections
   wss.on('connection', (ws: UserWebSocket) => {
     ws.isAlive = true;
-    
+
+    // Handle pong responses
     ws.on('pong', () => {
       ws.isAlive = true;
     });
-    
-    ws.on('error', (error) => {
-      console.error('WebSocket error:', error);
-    });
-    
-    ws.on('message', async (data: string) => {
+
+    // Handle messages from clients
+    ws.on('message', async (message) => {
       try {
-        const message = JSON.parse(data);
+        const data = JSON.parse(message.toString());
         
-        switch (message.type) {
+        // Handle different message types
+        switch (data.type) {
           case 'auth':
-            // Associate this connection with a user
-            ws.userId = message.userId;
-            const user = await storage.getUser(message.userId);
-            if (user) {
-              ws.username = user.username;
-              clients.set(message.userId, ws);
-              
-              // Update user status to online
-              await storage.updateUserStatus(message.userId, 'online');
-              
-              // Send user's chats
-              const chats = await storage.getChatsForUser(message.userId);
-              ws.send(JSON.stringify({
-                type: 'chats_list',
-                chats
-              }));
-              
-              // Broadcast online status to all users in shared chats
-              broadcastUserStatus(message.userId, 'online');
+            // Authenticate user and set userId and username on the socket
+            if (data.userId) {
+              ws.userId = data.userId;
+              const user = await User.findById(data.userId);
+              if (user) {
+                ws.username = user.username;
+                // Update user status to online
+                await User.findByIdAndUpdate(data.userId, { status: 'online' });
+                // Broadcast user status change
+                await broadcastUserStatus(data.userId, 'online');
+              }
             }
             break;
             
-          case 'message':
-            if (!ws.userId) break;
+          case 'pong':
+            ws.isAlive = true;
+            break;
             
-            try {
-              // Store message in database
-              const newMessage = await storage.createMessage({
-                chatId: message.chatId,
-                senderId: ws.userId,
-                content: message.content,
-                senderName: ws.username,
-                timestamp: new Date(),
-                status: 'sent'
+          case 'message':
+            // Handle new messages
+            if (!ws.userId) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Not authenticated' }));
+              return;
+            }
+            
+            if (data.chatId && data.content) {
+              // Check if user is a member of the chat
+              const isMember = await ChatMember.findOne({ 
+                chatId: data.chatId, 
+                userId: ws.userId 
               });
               
-              // Update chat's last message
-              await storage.updateChatLastMessage(
-                message.chatId, 
-                message.content, 
-                newMessage.timestamp
-              );
+              if (!isMember) {
+                ws.send(JSON.stringify({ 
+                  type: 'error', 
+                  message: 'You are not a member of this chat' 
+                }));
+                return;
+              }
               
-              // Get chat members to broadcast message
-              const chatMembers = await storage.getChatMembers(message.chatId);
+              // Get user info for message
+              const sender = await User.findById(ws.userId);
               
-              // Broadcast to all members of the chat
-              chatMembers.forEach(member => {
-                const client = clients.get(member.userId);
-                if (client && client.readyState === WebSocket.OPEN) {
-                  client.send(JSON.stringify({
-                    type: 'message',
-                    message: newMessage
-                  }));
-                  
-                  // If message is not from the current user, mark as delivered
-                  if (member.userId !== ws.userId) {
+              if (!sender) {
+                ws.send(JSON.stringify({ 
+                  type: 'error', 
+                  message: 'User not found' 
+                }));
+                return;
+              }
+              
+              // Create new message
+              const newMessage = await Message.create({
+                chatId: data.chatId,
+                senderId: ws.userId,
+                content: data.content,
+                isRead: false,
+                readBy: [ws.userId], // Sender has read their own message
+                attachments: data.attachments || []
+              });
+              
+              // Populate sender info
+              await newMessage.populate('senderId', 'username displayName avatarUrl');
+              
+              // Update chat with last message
+              await Chat.findByIdAndUpdate(data.chatId, {
+                lastMessage: data.content,
+                lastMessageTime: new Date()
+              });
+              
+              // Broadcast message to all chat members
+              const chatMembers = await ChatMember.find({ chatId: data.chatId });
+              
+              // Mark all other members with unread messages
+              await Promise.all(chatMembers.map(async (member) => {
+                if (member.userId !== ws.userId) {
+                  await ChatMember.findByIdAndUpdate(member._id, {
+                    $inc: { unreadCount: 1 }
+                  });
+                }
+              }));
+              
+              // Broadcast to all connected clients who are members of this chat
+              wss.clients.forEach((client: UserWebSocket) => {
+                if (client.readyState === WebSocket.OPEN && client.userId) {
+                  // Find if this connected client is a member of the chat
+                  const isMember = chatMembers.some(m => m.userId === client.userId);
+                  if (isMember) {
                     client.send(JSON.stringify({
-                      type: 'chat_updated',
-                      chat: {
-                        id: message.chatId,
-                        lastMessage: message.content,
-                        lastMessageTime: newMessage.timestamp
-                      }
+                      type: 'new_message',
+                      message: newMessage
                     }));
                   }
                 }
               });
-            } catch (error) {
-              console.error('Error handling message:', error);
-              ws.send(JSON.stringify({
-                type: 'error',
-                message: 'Failed to send message'
-              }));
             }
             break;
             
           case 'typing':
-            if (!ws.userId || !ws.username) break;
+            // Handle typing indicators
+            if (!ws.userId || !data.chatId) return;
             
-            // Broadcast typing indicator to other users in the chat
-            const chatMembers = await storage.getChatMembers(message.chatId);
-            chatMembers
-              .filter(member => member.userId !== ws.userId)
-              .forEach(member => {
-                const client = clients.get(member.userId);
-                if (client && client.readyState === WebSocket.OPEN) {
-                  client.send(JSON.stringify({
-                    type: 'typing',
-                    chatId: message.chatId,
-                    userId: ws.userId,
-                    username: ws.username,
-                    isTyping: message.isTyping
-                  }));
-                }
-              });
-            break;
-            
-          case 'get_messages':
-            if (!ws.userId) break;
-            
-            // Check if user is a member of the chat
-            const isMember = await storage.isUserInChat(message.chatId, ws.userId);
-            if (isMember) {
-              const messages = await storage.getMessagesForChat(message.chatId);
-              ws.send(JSON.stringify({
-                type: 'message_history',
-                chatId: message.chatId,
-                messages
-              }));
-            }
-            break;
-            
-          case 'mark_read':
-            if (!ws.userId) break;
-            
-            // Mark messages as read
-            await storage.markMessagesAsRead(message.chatId, ws.userId);
-            
-            // Notify senders that their messages were read
-            const chatMsgs = await storage.getMessagesForChat(message.chatId);
-            const senderIds = new Set(
-              chatMsgs.filter(msg => msg.senderId !== ws.userId).map(msg => msg.senderId)
-            );
-            
-            senderIds.forEach(senderId => {
-              const senderClient = clients.get(senderId);
-              if (senderClient && senderClient.readyState === WebSocket.OPEN) {
-                senderClient.send(JSON.stringify({
-                  type: 'messages_read',
-                  chatId: message.chatId,
-                  byUserId: ws.userId
+            wss.clients.forEach((client: UserWebSocket) => {
+              if (client.readyState === WebSocket.OPEN && 
+                  client.userId && 
+                  client.userId !== ws.userId) {
+                client.send(JSON.stringify({
+                  type: 'typing',
+                  chatId: data.chatId,
+                  userId: ws.userId,
+                  username: ws.username,
+                  isTyping: data.isTyping
                 }));
               }
             });
             break;
+            
+          case 'read':
+            // Mark messages as read
+            if (!ws.userId || !data.chatId) return;
+            
+            // Find the chat member
+            const chatMember = await ChatMember.findOne({
+              chatId: data.chatId,
+              userId: ws.userId
+            });
+            
+            if (chatMember) {
+              // Mark messages as read
+              await Message.updateMany(
+                { 
+                  chatId: data.chatId,
+                  readBy: { $ne: ws.userId }
+                },
+                { 
+                  $addToSet: { readBy: ws.userId } 
+                }
+              );
+              
+              // Reset unread count
+              await ChatMember.findByIdAndUpdate(
+                chatMember._id,
+                { unreadCount: 0, lastReadAt: new Date() }
+              );
+              
+              // Notify other users that messages have been read
+              wss.clients.forEach((client: UserWebSocket) => {
+                if (client.readyState === WebSocket.OPEN &&
+                    client.userId &&
+                    client.userId !== ws.userId) {
+                  client.send(JSON.stringify({
+                    type: 'read_receipt',
+                    chatId: data.chatId,
+                    userId: ws.userId
+                  }));
+                }
+              });
+            }
+            break;
         }
       } catch (error) {
-        console.error('Error processing WebSocket message:', error);
+        log(`WebSocket message error: ${error}`, 'websocket');
+        ws.send(JSON.stringify({ 
+          type: 'error', 
+          message: 'Failed to process message' 
+        }));
       }
     });
-    
+
+    // Handle disconnections
     ws.on('close', async () => {
       if (ws.userId) {
-        // Set user status to offline
-        await storage.updateUserStatus(ws.userId, 'offline');
-        
-        // Remove from clients map
-        clients.delete(ws.userId);
-        
-        // Broadcast offline status to all users in shared chats
-        broadcastUserStatus(ws.userId, 'offline');
+        // Update user status to offline
+        await User.findByIdAndUpdate(ws.userId, { status: 'offline' });
+        // Broadcast status change
+        await broadcastUserStatus(ws.userId, 'offline');
       }
     });
     
-    // Helper function to broadcast user status to relevant users
-    async function broadcastUserStatus(userId: number, status: string) {
-      // Get all chats this user belongs to
-      const userChats = await storage.getChatsForUser(userId);
-      
-      // For each chat, notify other members about status change
-      for (const chat of userChats) {
-        const members = await storage.getChatMembers(chat.id);
-        
-        for (const member of members) {
-          if (member.userId !== userId) {
-            const client = clients.get(member.userId);
-            if (client && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: 'user_status',
-                userId,
-                status
-              }));
-            }
-          }
-        }
-      }
-    }
+    // Send initial connection success message
+    ws.send(JSON.stringify({ type: 'connected' }));
   });
+  
+  // Helper function to broadcast user status changes
+  async function broadcastUserStatus(userId: string, status: string) {
+    const user = await User.findById(userId, 'username displayName avatarUrl status');
+    
+    if (!user) return;
+    
+    // Find all chats this user is a member of
+    const chatMemberships = await ChatMember.find({ userId });
+    const chatIds = chatMemberships.map(cm => cm.chatId);
+    
+    // Find all users who share a chat with this user
+    const chatMembers = await ChatMember.find({
+      chatId: { $in: chatIds },
+      userId: { $ne: userId }
+    });
+    
+    const userIds = [...new Set(chatMembers.map(cm => cm.userId))];
+    
+    // Broadcast to all connected clients who share a chat with this user
+    wss.clients.forEach((client: UserWebSocket) => {
+      if (client.readyState === WebSocket.OPEN && 
+          client.userId && 
+          userIds.includes(client.userId)) {
+        client.send(JSON.stringify({
+          type: 'user_status',
+          user: {
+            _id: userId,
+            username: user.username,
+            displayName: user.displayName,
+            avatarUrl: user.avatarUrl,
+            status
+          }
+        }));
+      }
+    });
+  }
 }

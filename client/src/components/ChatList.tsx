@@ -47,7 +47,7 @@ export default function ChatList({ chats, currentChat, className = "" }: ChatLis
   };
 
   const handleChatClick = (chat: Chat) => {
-    setLocation(`/chat/${chat.id}`);
+    setLocation(`/chat/${chat._id}`);
   };
 
   const createNewChat = async () => {
@@ -75,7 +75,7 @@ export default function ChatList({ chats, currentChat, className = "" }: ChatLis
           description: "Chat created successfully",
           variant: "default"
         });
-        setLocation(`/chat/${newChat.id}`);
+        setLocation(`/chat/${newChat._id}`);
         setIsNewChatDialogOpen(false);
         setNewChatName("");
       } else {
@@ -144,8 +144,8 @@ export default function ChatList({ chats, currentChat, className = "" }: ChatLis
         {filteredChats.length > 0 ? (
           filteredChats.map((chat) => (
             <div 
-              key={chat.id}
-              className={`px-3 py-2 hover:bg-gray-50 cursor-pointer ${currentChat?.id === chat.id ? 'border-l-4 border-primary bg-gray-50' : ''}`}
+              key={chat._id}
+              className={`px-3 py-2 hover:bg-gray-50 cursor-pointer ${currentChat?._id === chat._id ? 'border-l-4 border-primary bg-gray-50' : ''}`}
               onClick={() => handleChatClick(chat)}
             >
               <div className="flex justify-between items-start">

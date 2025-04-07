@@ -1,77 +1,58 @@
-import { pgTable, text, serial, integer, boolean, timestamp } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
+// This file serves as a compatibility layer for the MongoDB implementation
+// We're using MongoDB models directly but keeping this file for type references
+
 import { z } from "zod";
+import {
+  userSchema,
+  chatSchema,
+  messageSchema,
+  chatMemberSchema,
+  attachmentSchema,
+  reactionSchema,
+  User as UserType,
+  Chat as ChatType,
+  Message as MessageType,
+  ChatMember as ChatMemberType,
+  Attachment as AttachmentType,
+  Reaction as ReactionType
+} from "./models";
 
-export const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
-  avatarUrl: text("avatar_url"),
-  status: text("status").default("offline"),
-  lastActive: timestamp("last_active").defaultNow(),
-});
+// For compatibility with existing code that expects these types
+export type User = UserType & { 
+  _id: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
 
-export const chats = pgTable("chats", {
-  id: serial("id").primaryKey(),
-  name: text("name").notNull(),
-  avatarUrl: text("avatar_url"),
-  lastMessage: text("last_message"),
-  lastMessageTime: timestamp("last_message_time"),
-  status: text("status").default("offline"),
-  isGroup: boolean("is_group").default(false),
-});
+export type Chat = ChatType & { 
+  _id: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
 
-export const messages = pgTable("messages", {
-  id: serial("id").primaryKey(),
-  chatId: integer("chat_id").notNull(),
-  senderId: integer("sender_id").notNull(),
-  content: text("content").notNull(),
-  timestamp: timestamp("timestamp").defaultNow(),
-  status: text("status").default("sent"),
-  senderName: text("sender_name"),
-  senderAvatar: text("sender_avatar"),
-});
+export type Message = MessageType & { 
+  _id: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
 
-export const chatMembers = pgTable("chat_members", {
-  id: serial("id").primaryKey(),
-  chatId: integer("chat_id").notNull(),
-  userId: integer("user_id").notNull(),
-  joinedAt: timestamp("joined_at").defaultNow(),
-  isAdmin: boolean("is_admin").default(false),
-});
+export type ChatMember = ChatMemberType & { 
+  _id: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
 
-// Insert schemas
-export const insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
-});
+export type Attachment = AttachmentType;
+export type Reaction = ReactionType;
 
-export const insertChatSchema = createInsertSchema(chats).pick({
-  name: true,
-  isGroup: true,
-});
+// For compatibility with existing code that expects these schemas
+export const insertUserSchema = userSchema;
+export const insertChatSchema = chatSchema;
+export const insertMessageSchema = messageSchema;
+export const insertChatMemberSchema = chatMemberSchema;
 
-export const insertMessageSchema = createInsertSchema(messages).pick({
-  chatId: true,
-  senderId: true,
-  content: true,
-});
-
-export const insertChatMemberSchema = createInsertSchema(chatMembers).pick({
-  chatId: true,
-  userId: true,
-  isAdmin: true,
-});
-
-// Types
+// Export insert types
 export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
-
 export type InsertChat = z.infer<typeof insertChatSchema>;
-export type Chat = typeof chats.$inferSelect;
-
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
-export type Message = typeof messages.$inferSelect;
-
 export type InsertChatMember = z.infer<typeof insertChatMemberSchema>;
-export type ChatMember = typeof chatMembers.$inferSelect;

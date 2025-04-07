@@ -1,8 +1,4 @@
 import { 
-  users, 
-  chats, 
-  messages, 
-  chatMembers, 
   type User, 
   type InsertUser, 
   type Chat, 
@@ -14,191 +10,194 @@ import {
 } from "@shared/schema";
 import session from "express-session";
 import type { Store } from 'express-session';
-import createMemoryStore from "memorystore";
-import connectPg from "connect-pg-simple";
-import { db } from "./db";
-import { eq, and, desc, or, not, sql } from "drizzle-orm";
-import { pool } from "./db";
-
-const MemoryStore = createMemoryStore(session);
-const PostgresSessionStore = connectPg(session);
+import MongoStore from "connect-mongo";
+import { User as UserModel, Chat as ChatModel, Message as MessageModel, ChatMember as ChatMemberModel } from "./models";
+import { mongoClient } from "./db";
 
 // Interface for storage operations
 export interface IStorage {
   // User operations
-  getUser(id: number): Promise<User | undefined>;
+  getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
-  updateUserStatus(userId: number, status: string): Promise<void>;
+  updateUserStatus(userId: string, status: string): Promise<void>;
   
   // Chat operations
-  getChatsForUser(userId: number): Promise<Chat[]>;
+  getChatsForUser(userId: string): Promise<Chat[]>;
   createChat(chat: InsertChat): Promise<Chat>;
-  addUserToChat(chatId: number, userId: number, isAdmin?: boolean): Promise<void>;
-  isUserInChat(chatId: number, userId: number): Promise<boolean>;
-  getChatMembers(chatId: number): Promise<ChatMember[]>;
-  updateChatLastMessage(chatId: number, message: string, timestamp: Date): Promise<void>;
+  addUserToChat(chatId: string, userId: string, isAdmin?: boolean): Promise<void>;
+  isUserInChat(chatId: string, userId: string): Promise<boolean>;
+  getChatMembers(chatId: string): Promise<ChatMember[]>;
+  updateChatLastMessage(chatId: string, message: string, timestamp: Date): Promise<void>;
   
   // Message operations
-  getMessagesForChat(chatId: number): Promise<Message[]>;
+  getMessagesForChat(chatId: string): Promise<Message[]>;
   createMessage(message: InsertMessage & { senderName?: string, senderAvatar?: string | null }): Promise<Message>;
-  markMessagesAsRead(chatId: number, userId: number): Promise<void>;
+  markMessagesAsRead(chatId: string, userId: string): Promise<void>;
   
   // Session store
   sessionStore: Store;
 }
 
-// Database implementation
+// MongoDB implementation
 export class DatabaseStorage implements IStorage {
   sessionStore: Store;
   
   constructor() {
-    this.sessionStore = new PostgresSessionStore({
-      pool,
-      createTableIfMissing: true
+    this.sessionStore = MongoStore.create({
+      client: mongoClient,
+      collectionName: 'sessions'
     });
   }
   
   // User operations
-  async getUser(id: number): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.id, id));
-    return user;
+  async getUser(id: string): Promise<User | undefined> {
+    const user = await UserModel.findById(id);
+    return user ? (user.toObject() as User) : undefined;
   }
   
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.username, username));
-    return user;
+    const user = await UserModel.findOne({ username });
+    return user ? (user.toObject() as User) : undefined;
   }
   
   async createUser(insertUser: InsertUser): Promise<User> {
-    const [user] = await db.insert(users)
-      .values({
-        ...insertUser,
-        status: "online",
-        lastActive: new Date()
-      })
-      .returning();
-    return user;
+    const user = await UserModel.create({
+      ...insertUser,
+      status: "online"
+    });
+    
+    return user.toObject() as User;
   }
   
-  async updateUserStatus(userId: number, status: string): Promise<void> {
-    await db.update(users)
-      .set({
-        status,
-        lastActive: new Date()
-      })
-      .where(eq(users.id, userId));
+  async updateUserStatus(userId: string, status: string): Promise<void> {
+    await UserModel.findByIdAndUpdate(userId, { 
+      status,
+      updatedAt: new Date()
+    });
   }
   
   // Chat operations
-  async getChatsForUser(userId: number): Promise<Chat[]> {
-    // Get chat ids that the user is a member of
-    const chatMembersList = await db.select({
-      chatId: chatMembers.chatId
-    })
-    .from(chatMembers)
-    .where(eq(chatMembers.userId, userId));
-    
-    const chatIds = chatMembersList.map(cm => cm.chatId);
+  async getChatsForUser(userId: string): Promise<Chat[]> {
+    // Find chat memberships
+    const memberships = await ChatMemberModel.find({ userId });
+    const chatIds = memberships.map(membership => membership.chatId);
     
     if (chatIds.length === 0) {
       return [];
     }
     
-    // Get the chats using proper SQL construction
-    const userChats = await db.select()
-      .from(chats)
-      .where(
-        sql`${chats.id} IN (${sql.join(chatIds.map(id => sql`${id}`), sql`, `)})`
-      );
+    // Get all chats
+    const chats = await ChatModel.find({ _id: { $in: chatIds } })
+      .sort({ lastMessageTime: -1 });
     
-    return userChats;
+    // Return chats with unread message count
+    return Promise.all(chats.map(async (chat) => {
+      const membership = memberships.find(
+        m => m.chatId.toString() === chat._id.toString()
+      );
+      
+      return {
+        ...(chat.toObject() as Chat),
+        unreadCount: membership ? membership.unreadCount : 0
+      };
+    }));
   }
   
   async createChat(insertChat: InsertChat): Promise<Chat> {
-    const [chat] = await db.insert(chats)
-      .values({
-        ...insertChat,
-        status: "online"
-      })
-      .returning();
+    const chat = await ChatModel.create({
+      ...insertChat,
+      status: "active",
+      lastMessageTime: null,
+      lastMessage: ""
+    });
     
-    return chat;
+    return chat.toObject() as Chat;
   }
   
-  async addUserToChat(chatId: number, userId: number, isAdmin: boolean = false): Promise<void> {
-    await db.insert(chatMembers)
-      .values({
-        chatId,
-        userId,
-        isAdmin,
-        joinedAt: new Date()
-      });
+  async addUserToChat(chatId: string, userId: string, isAdmin: boolean = false): Promise<void> {
+    await ChatMemberModel.create({
+      chatId,
+      userId,
+      isAdmin,
+      joinedAt: new Date(),
+      lastReadAt: new Date(),
+      unreadCount: 0
+    });
   }
   
-  async isUserInChat(chatId: number, userId: number): Promise<boolean> {
-    const [member] = await db.select()
-      .from(chatMembers)
-      .where(
-        and(
-          eq(chatMembers.chatId, chatId),
-          eq(chatMembers.userId, userId)
-        )
-      );
+  async isUserInChat(chatId: string, userId: string): Promise<boolean> {
+    const membership = await ChatMemberModel.findOne({
+      chatId,
+      userId
+    });
     
-    return !!member;
+    return !!membership;
   }
   
-  async getChatMembers(chatId: number): Promise<ChatMember[]> {
-    return db.select()
-      .from(chatMembers)
-      .where(eq(chatMembers.chatId, chatId));
+  async getChatMembers(chatId: string): Promise<ChatMember[]> {
+    const members = await ChatMemberModel.find({ chatId });
+    return members.map(member => member.toObject() as ChatMember);
   }
   
-  async updateChatLastMessage(chatId: number, message: string, timestamp: Date): Promise<void> {
-    await db.update(chats)
-      .set({
-        lastMessage: message,
-        lastMessageTime: timestamp
-      })
-      .where(eq(chats.id, chatId));
+  async updateChatLastMessage(chatId: string, message: string, timestamp: Date): Promise<void> {
+    await ChatModel.findByIdAndUpdate(chatId, {
+      lastMessage: message,
+      lastMessageTime: timestamp
+    });
   }
   
   // Message operations
-  async getMessagesForChat(chatId: number): Promise<Message[]> {
-    return db.select()
-      .from(messages)
-      .where(eq(messages.chatId, chatId))
-      .orderBy(messages.timestamp);
+  async getMessagesForChat(chatId: string): Promise<Message[]> {
+    const messages = await MessageModel.find({ chatId })
+      .sort({ createdAt: 1 })
+      .populate('senderId', 'username displayName avatarUrl');
+    
+    return messages.map(message => message.toObject() as Message);
   }
   
   async createMessage(insertMessage: InsertMessage & { senderName?: string, senderAvatar?: string | null }): Promise<Message> {
-    const [message] = await db.insert(messages)
-      .values({
-        chatId: insertMessage.chatId,
-        senderId: insertMessage.senderId,
-        content: insertMessage.content,
-        status: "sent",
-        timestamp: new Date(),
-        senderName: insertMessage.senderName || "",
-        senderAvatar: insertMessage.senderAvatar
-      })
-      .returning();
+    const message = await MessageModel.create({
+      chatId: insertMessage.chatId,
+      senderId: insertMessage.senderId,
+      content: insertMessage.content,
+      isRead: false,
+      readBy: [insertMessage.senderId], // Sender has read their own message
+      attachments: insertMessage.attachments || []
+    });
     
-    return message;
+    await message.populate('senderId', 'username displayName avatarUrl');
+    
+    return message.toObject() as Message;
   }
   
-  async markMessagesAsRead(chatId: number, userId: number): Promise<void> {
-    await db.update(messages)
-      .set({
-        status: "read"
-      })
-      .where(
-        and(
-          eq(messages.chatId, chatId),
-          not(eq(messages.senderId, userId)) // Only mark messages from other users
-        )
+  async markMessagesAsRead(chatId: string, userId: string): Promise<void> {
+    // Mark messages as read
+    await MessageModel.updateMany(
+      { 
+        chatId,
+        readBy: { $ne: userId }
+      },
+      { 
+        $addToSet: { readBy: userId } 
+      }
+    );
+    
+    // Reset unread count for this user
+    const chatMember = await ChatMemberModel.findOne({
+      chatId,
+      userId
+    });
+    
+    if (chatMember) {
+      await ChatMemberModel.findByIdAndUpdate(
+        chatMember._id,
+        { 
+          unreadCount: 0,
+          lastReadAt: new Date()
+        }
       );
+    }
   }
 }
 

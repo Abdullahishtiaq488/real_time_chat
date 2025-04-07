@@ -1,15 +1,27 @@
-import { Pool, neonConfig } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-serverless';
-import ws from "ws";
-import * as schema from "@shared/schema";
+import mongoose from 'mongoose';
+import { log } from './vite';
+import dotenv from 'dotenv';
 
-neonConfig.webSocketConstructor = ws;
+// Load environment variables
+dotenv.config();
 
-if (!process.env.DATABASE_URL) {
-  throw new Error(
-    "DATABASE_URL must be set. Did you forget to provision a database?",
-  );
-}
+// MongoDB connection URI
+const DATABASE_URI = process.env.DATABASE_URI || 'mongodb://localhost:27017/chat-app';
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-export const db = drizzle({ client: pool, schema });
+// Connect to MongoDB
+export const connectDB = async () => {
+  try {
+    await mongoose.connect(DATABASE_URI);
+    log('MongoDB connected successfully', 'mongodb');
+    return mongoose.connection;
+  } catch (error) {
+    log(`MongoDB connection error: ${error}`, 'mongodb');
+    process.exit(1);
+  }
+};
+
+// Export the mongoose instance
+export const db = mongoose;
+
+// Exports for reference by storage.ts and other modules
+export const mongoClient = mongoose.connection.getClient();

@@ -19,7 +19,7 @@ export default function ChatPage() {
   // Set current chat based on URL param
   useEffect(() => {
     if (params.id && chats.length > 0) {
-      const chat = chats.find(c => c.id === params.id);
+      const chat = chats.find(c => c._id === params.id);
       if (chat) {
         setCurrentChat(chat);
       }

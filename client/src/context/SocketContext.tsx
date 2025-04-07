@@ -51,7 +51,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       // Send authentication message
       newSocket.send(JSON.stringify({
         type: "auth",
-        userId: user.id
+        userId: user._id
       }));
 
       // Get initial chat list
@@ -134,11 +134,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     // Update chat with latest message
     setChats(prevChats => {
       return prevChats.map(chat => {
-        if (chat.id === message.chatId) {
+        if (chat._id === message.chatId) {
           return {
             ...chat,
             lastMessage: message.content,
-            lastMessageTime: message.timestamp
+            lastMessageTime: message.createdAt
           };
         }
         return chat;
@@ -163,9 +163,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const updateChat = useCallback((chat: Chat) => {
     setChats(prev => {
-      const exists = prev.some(c => c.id === chat.id);
+      const exists = prev.some(c => c._id === chat._id);
       if (exists) {
-        return prev.map(c => c.id === chat.id ? chat : c);
+        return prev.map(c => c._id === chat._id ? chat : c);
       } else {
         return [...prev, chat];
       }
