@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { Chat } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Edit, Menu } from "lucide-react";
+import { Search, Edit, Menu, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface ChatListProps {
