@@ -35,6 +35,7 @@ export const messageSchema = z.object({
   readBy: z.array(z.string()).optional().default([]),
   attachments: z.array(attachmentSchema).optional().default([]),
   reactions: z.array(reactionSchema).optional().default([]),
+  isSystemMessage: z.boolean().optional().default(false),
 });
 
 // Chat schema

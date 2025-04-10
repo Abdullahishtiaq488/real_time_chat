@@ -2,268 +2,223 @@ import { createContext, ReactNode, useContext, useEffect, useState, useCallback 
 import { useAuth } from "./AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { Message, Chat } from "@shared/schema";
+import { io, Socket } from "socket.io-client";
+import { useQueryClient } from "@tanstack/react-query";
 
-interface SocketContextProps {
-  isConnected: boolean;
-  typingUsers: { [chatId: string]: string[] };
-  sendMessage: (chatId: string, content: string) => void;
-  startTyping: (chatId: string) => void;
-  stopTyping: (chatId: string) => void;
-  messages: { [chatId: string]: Message[] };
-  chats: Chat[];
-  currentChat: Chat | null;
-  setCurrentChat: (chat: Chat | null) => void;
-  loadMessages: (chatId: string) => void;
-  markAsRead: (chatId: string) => void;
+// Add global type definitions
+declare global {
+  interface Window {
+    messageTimeouts: {
+      [chatId: string]: {
+        apiTimeout: NodeJS.Timeout | null;
+        loadingTimeout: NodeJS.Timeout;
+      }
+    }
+  }
 }
 
-const SocketContext = createContext<SocketContextProps | null>(null);
+interface SocketContextType {
+  socket: Socket | null;
+  isConnected: boolean;
+  currentChat: Chat | null;
+  messages: Record<string, Message[]>;
+  typingUsers: Record<string, string[]>;
+  chats: Chat[];
+  unreadCount: Record<string, number>;
+  selectChat: (chatId: string) => void;
+  sendMessage: (chatId: string, content: string) => Promise<void>;
+  startTyping: (chatId: string) => void;
+  stopTyping: (chatId: string) => void;
+  loadMessages: (chatId: string) => void;
+  markAsRead: (chatId: string) => void;
+  createChat: (name: string, userIds: string[]) => Promise<Chat>;
+  addUserToChat: (chatId: string, userId: string) => Promise<void>;
+}
+
+const SocketContext = createContext<SocketContextType | null>(null);
 
 export function SocketProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast();
   const { user } = useAuth();
-  const [socket, setSocket] = useState<WebSocket | null>(null);
+  const queryClient = useQueryClient();
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [typingUsers, setTypingUsers] = useState<{ [chatId: string]: string[] }>({});
-  const [messages, setMessages] = useState<{ [chatId: string]: Message[] }>({});
-  const [chats, setChats] = useState<Chat[]>([]);
   const [currentChat, setCurrentChat] = useState<Chat | null>(null);
+  const [messages, setMessages] = useState<Record<string, Message[]>>({});
+  const [typingUsers, setTypingUsers] = useState<Record<string, string[]>>({});
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [unreadCount, setUnreadCount] = useState<Record<string, number>>({});
 
-  // Connect to WebSocket when user is authenticated
+  // Initialize socket connection
   useEffect(() => {
-    if (!user) {
-      if (socket) {
-        socket.close();
-        setSocket(null);
-        setIsConnected(false);
-      }
-      return;
-    }
+    if (!user) return;
 
-    // Get the protocol and host for WebSocket connection
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/ws`;
-    console.log("Connecting to WebSocket:", wsUrl);
-    
-    // Create new WebSocket connection
-    const newSocket = new WebSocket(wsUrl);
+    const newSocket = io(import.meta.env.VITE_SOCKET_URL || "http://localhost:3000", {
+      auth: {
+        token: user.token,
+      },
+    });
+
+    newSocket.on("connect", () => {
+      console.log("WebSocket connection established");
+      setIsConnected(true);
+    });
+
+    newSocket.on("disconnect", () => {
+      console.log("WebSocket connection lost");
+      setIsConnected(false);
+    });
+
+    newSocket.on("error", (error) => {
+      console.error("WebSocket error:", error);
+    });
+
+    newSocket.on("message", (message: Message) => {
+      console.log("New message received:", message);
+      setMessages((prev) => {
+        const chatMessages = prev[message.chatId] || [];
+        return {
+          ...prev,
+          [message.chatId]: [...chatMessages, message],
+        };
+      });
+
+      // Update unread count if not in current chat
+      if (currentChat?._id !== message.chatId) {
+        setUnreadCount((prev) => ({
+          ...prev,
+          [message.chatId]: (prev[message.chatId] || 0) + 1,
+        }));
+      }
+    });
+
+    newSocket.on("typing", ({ chatId, userId, isTyping }) => {
+      setTypingUsers((prev) => {
+        const currentTyping = prev[chatId] || [];
+        if (isTyping && !currentTyping.includes(userId)) {
+          return {
+            ...prev,
+            [chatId]: [...currentTyping, userId],
+          };
+        } else if (!isTyping) {
+          return {
+            ...prev,
+            [chatId]: currentTyping.filter((id) => id !== userId),
+          };
+        }
+        return prev;
+      });
+    });
+
+    newSocket.on("chat", (chat: Chat) => {
+      console.log("Chat updated:", chat);
+      setChats((prev) => {
+        const existingIndex = prev.findIndex((c) => c._id === chat._id);
+        if (existingIndex >= 0) {
+          const newChats = [...prev];
+          newChats[existingIndex] = chat;
+          return newChats;
+        }
+        return [...prev, chat];
+      });
+    });
+
+    newSocket.on("connected", () => {
+      console.log("Connected to WebSocket server");
+      // Load initial data
+      newSocket.emit("getChats");
+    });
+
+    newSocket.on("chats", (loadedChats: Chat[]) => {
+      console.log("Chats loaded:", loadedChats.length);
+      setChats(loadedChats);
+    });
 
     setSocket(newSocket);
 
-    newSocket.onopen = () => {
-      setIsConnected(true);
-      // Send authentication message
-      newSocket.send(JSON.stringify({
-        type: "auth",
-        userId: user._id
-      }));
-
-      // Get initial chat list
-      fetch('/api/chats')
-        .then(res => res.json())
-        .then(data => {
-          setChats(data);
-        })
-        .catch(err => {
-          toast({
-            title: "Error loading chats",
-            description: err.message,
-            variant: "destructive"
-          });
-        });
-    };
-
-    newSocket.onclose = () => {
-      setIsConnected(false);
-      toast({
-        title: "Disconnected",
-        description: "Connection to chat server lost. Reconnecting...",
-        variant: "destructive"
-      });
-    };
-
-    newSocket.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      toast({
-        title: "Connection Error",
-        description: "Error connecting to the chat server",
-        variant: "destructive"
-      });
-    };
-
-    newSocket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        switch (data.type) {
-          case "message":
-            handleNewMessage(data.message);
-            break;
-          case "typing":
-            handleTypingIndicator(data);
-            break;
-          case "chat_updated":
-            updateChat(data.chat);
-            break;
-          case "chats_list":
-            setChats(data.chats);
-            break;
-          case "message_history":
-            setMessages(prev => ({
-              ...prev,
-              [data.chatId]: data.messages
-            }));
-            break;
-        }
-      } catch (err) {
-        console.error("Error processing message:", err);
-      }
-    };
-
     return () => {
-      if (newSocket) {
-        newSocket.close();
-      }
+      newSocket.close();
     };
-  }, [user, toast]);
+  }, [user]);
 
-  const handleNewMessage = useCallback((message: Message) => {
-    setMessages(prev => {
-      const chatMessages = prev[message.chatId] || [];
-      return {
-        ...prev,
-        [message.chatId]: [...chatMessages, message]
-      };
-    });
+  const selectChat = useCallback((chatId: string) => {
+    if (!socket) return;
+    console.log("Selecting chat:", chatId);
+    socket.emit("selectChat", chatId);
+    setCurrentChat(chats.find((chat) => chat._id === chatId) || null);
+    setUnreadCount((prev) => ({ ...prev, [chatId]: 0 }));
+  }, [socket, chats]);
 
-    // Update chat with latest message
-    setChats(prevChats => {
-      return prevChats.map(chat => {
-        if (chat._id === message.chatId) {
-          return {
-            ...chat,
-            lastMessage: message.content,
-            lastMessageTime: message.createdAt
-          };
-        }
-        return chat;
+  const sendMessage = useCallback(async (chatId: string, content: string) => {
+    if (!socket) throw new Error("Socket not connected");
+    return new Promise<void>((resolve, reject) => {
+      socket.emit("sendMessage", { chatId, content }, (error: Error | null) => {
+        if (error) reject(error);
+        else resolve();
       });
     });
-  }, []);
-
-  const handleTypingIndicator = useCallback((data: { chatId: string, userId: string, isTyping: boolean, username: string }) => {
-    setTypingUsers(prev => {
-      const { chatId, username, isTyping } = data;
-      const chatTypers = prev[chatId] || [];
-      
-      if (isTyping && !chatTypers.includes(username)) {
-        return { ...prev, [chatId]: [...chatTypers, username] };
-      } else if (!isTyping) {
-        return { ...prev, [chatId]: chatTypers.filter(user => user !== username) };
-      }
-      
-      return prev;
-    });
-  }, []);
-
-  const updateChat = useCallback((chat: Chat) => {
-    setChats(prev => {
-      const exists = prev.some(c => c._id === chat._id);
-      if (exists) {
-        return prev.map(c => c._id === chat._id ? chat : c);
-      } else {
-        return [...prev, chat];
-      }
-    });
-  }, []);
-
-  const sendMessage = useCallback((chatId: string, content: string) => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "message",
-        chatId,
-        content
-      }));
-    } else {
-      toast({
-        title: "Connection error",
-        description: "You're currently offline. Message will be sent when you reconnect.",
-        variant: "destructive"
-      });
-    }
-  }, [socket, toast]);
-
-  const startTyping = useCallback((chatId: string) => {
-    if (socket && socket.readyState === WebSocket.OPEN && user) {
-      socket.send(JSON.stringify({
-        type: "typing",
-        chatId,
-        isTyping: true
-      }));
-    }
-  }, [socket, user]);
-
-  const stopTyping = useCallback((chatId: string) => {
-    if (socket && socket.readyState === WebSocket.OPEN && user) {
-      socket.send(JSON.stringify({
-        type: "typing",
-        chatId,
-        isTyping: false
-      }));
-    }
-  }, [socket, user]);
-
-  const loadMessages = useCallback((chatId: string) => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "get_messages",
-        chatId
-      }));
-    } else {
-      // Fallback to API call if WebSocket is not connected
-      fetch(`/api/chats/${chatId}/messages`)
-        .then(res => res.json())
-        .then(data => {
-          setMessages(prev => ({
-            ...prev,
-            [chatId]: data
-          }));
-        })
-        .catch(err => {
-          toast({
-            title: "Error loading messages",
-            description: err.message,
-            variant: "destructive"
-          });
-        });
-    }
-  }, [socket, toast]);
-
-  const markAsRead = useCallback((chatId: string) => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "mark_read",
-        chatId
-      }));
-    }
   }, [socket]);
 
+  const startTyping = useCallback((chatId: string) => {
+    if (!socket) return;
+    socket.emit("typing", { chatId, isTyping: true });
+  }, [socket]);
+
+  const stopTyping = useCallback((chatId: string) => {
+    if (!socket) return;
+    socket.emit("typing", { chatId, isTyping: false });
+  }, [socket]);
+
+  const loadMessages = useCallback((chatId: string) => {
+    if (!socket) return;
+    socket.emit("getMessages", chatId);
+  }, [socket]);
+
+  const markAsRead = useCallback((chatId: string) => {
+    if (!socket) return;
+    socket.emit("markAsRead", chatId);
+  }, [socket]);
+
+  const createChat = useCallback(async (name: string, userIds: string[]) => {
+    if (!socket) throw new Error("Socket not connected");
+    return new Promise<Chat>((resolve, reject) => {
+      socket.emit("createChat", { name, userIds }, (error: Error | null, chat: Chat) => {
+        if (error) reject(error);
+        else resolve(chat);
+      });
+    });
+  }, [socket]);
+
+  const addUserToChat = useCallback(async (chatId: string, userId: string) => {
+    if (!socket) throw new Error("Socket not connected");
+    return new Promise<void>((resolve, reject) => {
+      socket.emit("addUserToChat", { chatId, userId }, (error: Error | null) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }, [socket]);
+
+  const value = {
+    socket,
+    isConnected,
+    currentChat,
+    messages,
+    typingUsers,
+    chats,
+    unreadCount,
+    selectChat,
+    sendMessage,
+    startTyping,
+    stopTyping,
+    loadMessages,
+    markAsRead,
+    createChat,
+    addUserToChat,
+  };
+
   return (
-    <SocketContext.Provider
-      value={{
-        isConnected,
-        typingUsers,
-        sendMessage,
-        startTyping,
-        stopTyping,
-        messages,
-        chats,
-        currentChat,
-        setCurrentChat,
-        loadMessages,
-        markAsRead
-      }}
-    >
+    <SocketContext.Provider value={value}>
       {children}
     </SocketContext.Provider>
   );

@@ -13,6 +13,11 @@ import type { Store } from 'express-session';
 import MongoStore from "connect-mongo";
 import { User as UserModel, Chat as ChatModel, Message as MessageModel, ChatMember as ChatMemberModel } from "./models";
 import { mongoClient } from "./db";
+import { Router } from "express";
+import multer from "multer";
+import path from "path";
+import { log } from "./utils/logger";
+import { v4 as uuidv4 } from "uuid";
 
 // Interface for storage operations
 export interface IStorage {
@@ -45,8 +50,9 @@ export class DatabaseStorage implements IStorage {
   
   constructor() {
     this.sessionStore = MongoStore.create({
-      client: mongoClient,
-      collectionName: 'sessions'
+      client: mongoClient.connection.getClient() as any,
+      stringify: false,
+      ttl: 24 * 60 * 60 // 1 day
     });
   }
   
@@ -202,3 +208,65 @@ export class DatabaseStorage implements IStorage {
 }
 
 export const storage = new DatabaseStorage();
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ["image/jpeg", "image/png", "image/gif"];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Invalid file type"));
+    }
+  },
+});
+
+export function setupStorage(app: any) {
+  const router = Router();
+
+  // Upload avatar
+  router.post("/upload/avatar", upload.single("avatar"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const fileUrl = `/uploads/${req.file.filename}`;
+      res.json({ url: fileUrl });
+    } catch (error) {
+      log("Error uploading avatar:", error);
+      res.status(500).json({ message: "Failed to upload avatar" });
+    }
+  });
+
+  // Upload chat attachment
+  router.post("/upload/attachment", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const fileUrl = `/uploads/${req.file.filename}`;
+      res.json({ url: fileUrl });
+    } catch (error) {
+      log("Error uploading attachment:", error);
+      res.status(500).json({ message: "Failed to upload attachment" });
+    }
+  });
+
+  // Apply routes
+  app.use("/api", router);
+}

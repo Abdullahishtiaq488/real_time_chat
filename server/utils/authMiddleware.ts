@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { User } from '../models';
+import { log } from '../vite';
 
 // Extend the Express Request interface to include user property
 declare global {
@@ -12,23 +13,14 @@ declare global {
 
 // Check if user is authenticated
 export const isAuth = async (req: Request, res: Response, next: NextFunction) => {
-  if (!req.session || !req.session.userId) {
+  // Use req.isAuthenticated() from Passport.js to check if the user is authenticated
+  if (!req.isAuthenticated()) {
+    log(`Authentication failed: User not authenticated`, 'auth');
     return res.status(401).json({ error: 'Not authenticated' });
   }
   
-  try {
-    const user = await User.findById(req.session.userId).select('-password');
-    if (!user) {
-      return res.status(401).json({ error: 'User not found' });
-    }
-    
-    // Set user in request object
-    req.user = user;
-    next();
-  } catch (err) {
-    console.error('Auth Middleware Error:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
+  log(`User authenticated: ${req.user._id}`, 'auth');
+  next();
 };
 
 // Check if user is admin (for group chats)

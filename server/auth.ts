@@ -1,11 +1,19 @@
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
-import { Express, Request } from "express";
+import { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { User } from "./models"; 
 import { log } from "./vite";
+import MongoStore from "connect-mongo";
+import { mongoClient } from "./db";
+import dotenv from 'dotenv';
+import { Socket } from "socket.io";
+import { userLoginSchema } from "@shared/schema";
+
+// Load environment variables
+dotenv.config();
 
 const scryptAsync = promisify(scrypt);
 
@@ -30,22 +38,46 @@ async function hashPassword(password: string) {
   return `${buf.toString("hex")}.${salt}`;
 }
 
-// Helper function to compare passwords
-async function comparePasswords(supplied: string, stored: string) {
-  const [hashed, salt] = stored.split(".");
-  const hashedBuf = Buffer.from(hashed, "hex");
-  const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
-  return timingSafeEqual(hashedBuf, suppliedBuf);
+// Helper function to compare password with stored hash
+async function comparePasswords(password: string, stored: string) {
+  try {
+    // Check if the stored password has the correct format (hash.salt)
+    if (!stored.includes('.')) {
+      log(`Invalid password format: ${stored.substring(0, 5)}...`, 'auth');
+      return false;
+    }
+    
+    const [hashValue, salt] = stored.split(".");
+    
+    if (!hashValue || !salt) {
+      log(`Hash or salt is missing from stored password`, 'auth');
+      return false;
+    }
+    
+    // Generate hash from provided password and salt
+    const buf = (await scryptAsync(password, salt, 64)) as Buffer;
+    const keyBuffer = Buffer.from(hashValue, "hex");
+    
+    // Compare buffers safely
+    return timingSafeEqual(buf, keyBuffer);
+  } catch (error) {
+    log(`Error comparing passwords: ${error}`, 'auth');
+    return false;
+  }
 }
 
 export function setupAuth(app: Express) {
-  // Using in-memory session store for simplicity
-  // We'll implement MongoDB store later when other issues are fixed
+  // Use MongoDB for session storage
+  const sessionStore = MongoStore.create({
+    mongoUrl: process.env.DATABASE_URI,
+    collectionName: 'sessions'
+  });
 
   const sessionSettings: session.SessionOptions = {
     secret: process.env.SESSION_SECRET || 'chat-app-secret-key',
     resave: false,
     saveUninitialized: false,
+    store: sessionStore,
     cookie: {
       maxAge: 1000 * 60 * 60 * 24 * 7, // 1 week
       httpOnly: true,
@@ -63,16 +95,26 @@ export function setupAuth(app: Express) {
   passport.use(
     new LocalStrategy(async (username, password, done) => {
       try {
+        log(`Attempting to find user: ${username}`, 'auth');
         const user = await User.findOne({ username });
         
-        if (!user || !(await comparePasswords(password, user.password))) {
+        if (!user) {
+          log(`User not found: ${username}`, 'auth');
+          return done(null, false, { message: 'Invalid username or password' });
+        }
+        
+        const isPasswordValid = await comparePasswords(password, user.password);
+        if (!isPasswordValid) {
+          log(`Invalid password for user: ${username}`, 'auth');
           return done(null, false, { message: 'Invalid username or password' });
         }
         
         // Convert mongoose document to plain object
         const userObj = user.toObject();
+        log(`User authenticated successfully: ${username}`, 'auth');
         return done(null, userObj);
       } catch (err) {
+        log(`Authentication error: ${err}`, 'auth');
         return done(err);
       }
     }),
@@ -80,147 +122,191 @@ export function setupAuth(app: Express) {
 
   // Serialize user to session
   passport.serializeUser((user, done) => {
+    log(`Serializing user: ${user._id}`, 'auth');
     done(null, user._id);
   });
 
   // Deserialize user from session
   passport.deserializeUser(async (id: string, done) => {
     try {
+      log(`Deserializing user ID: ${id}`, 'auth');
       const user = await User.findById(id).select('-password');
+      
       if (!user) {
+        log(`User not found during deserialization: ${id}`, 'auth');
         return done(null, null);
       }
+      
       // Convert mongoose document to plain object
       const userObj = user.toObject();
+      log(`User deserialized successfully: ${userObj.username}`, 'auth');
       done(null, userObj);
     } catch (err) {
+      log(`Deserialization error: ${err}`, 'auth');
       done(err);
     }
   });
 
-  // Registration route
-  app.post("/api/register", async (req, res, next) => {
-    log(`Registration attempt: ${JSON.stringify({ ...req.body, password: '***REDACTED***' })}`, 'auth');
-    
+  // Login route
+  app.post("/api/auth/login", async (req: Request, res: Response) => {
     try {
-      console.log('Register endpoint called with body:', { ...req.body, password: '***REDACTED***' });
-      
-      // Check if user already exists
-      const existingUser = await User.findOne({ username: req.body.username });
+      const { username, password } = userLoginSchema.parse(req.body);
+      log("Login attempt for user:", username);
+
+      const user = await User.findOne({ username });
+      if (!user) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
+
+      const isValid = await comparePasswords(password, user.password);
+      if (!isValid) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
+
+      // Regenerate session to prevent session fixation
+      req.session.regenerate((err) => {
+        if (err) {
+          log("Session regeneration error:", err);
+          return res.status(500).json({ message: "Internal server error" });
+        }
+
+        // Set user in session
+        req.session.userId = user._id;
+        req.session.save((err) => {
+          if (err) {
+            log("Session save error:", err);
+            return res.status(500).json({ message: "Internal server error" });
+          }
+
+          // Update user status
+          user.status = "online";
+          await user.save();
+
+          // Return user data (excluding password)
+          const { password: _, ...userData } = user.toObject();
+          res.json({ user: userData });
+        });
+      });
+    } catch (error) {
+      log("Login error:", error);
+      res.status(400).json({ message: "Invalid request" });
+    }
+  });
+
+  // Register route
+  app.post("/api/auth/register", async (req: Request, res: Response) => {
+    try {
+      const { username, password, displayName } = req.body;
+      log("Register attempt for user:", username);
+
+      // Check if username exists
+      const existingUser = await User.findOne({ username });
       if (existingUser) {
-        log(`Registration failed: Username ${req.body.username} already exists`, 'auth');
-        console.log(`Registration failed: Username ${req.body.username} already exists`);
         return res.status(400).json({ message: "Username already exists" });
       }
 
-      // Create new user
-      const { username, password, displayName } = req.body;
-      
-      if (!username || !password || !displayName) {
-        log(`Registration failed: Missing required fields`, 'auth');
-        console.log(`Registration failed: Missing required fields:`, 
-          { username: !!username, password: !!password, displayName: !!displayName });
-        return res.status(400).json({ 
-          message: "Username, password, and display name are required" 
-        });
-      }
-      
-      log(`Creating new user: ${username}`, 'auth');
-      console.log(`Creating new user: ${username}`);
+      // Hash password
       const hashedPassword = await hashPassword(password);
-      
-      const user = await User.create({
+
+      // Create user
+      const user = new User({
         username,
         password: hashedPassword,
         displayName,
-        status: 'online'
+        status: "offline",
       });
-      
-      log(`User created successfully: ${username}`, 'auth');
-      console.log(`User created successfully:`, { id: user._id, username });
 
-      // Log in the new user
-      req.login(user, (err) => {
-        if (err) {
-          log(`Session error during registration: ${err}`, 'auth');
-          console.error(`Session error during registration:`, err);
-          return next(err);
-        }
-        
-        // Return user without password
-        const userResponse = user.toObject();
-        const { password: _, ...userWithoutPassword } = userResponse;
-        
-        log(`Registration successful: ${username}`, 'auth');
-        console.log(`Registration completed successfully for: ${username}`);
-        res.status(201).json(userWithoutPassword);
+      await user.save();
+
+      // Set user in session
+      req.session.userId = user._id;
+      await new Promise<void>((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
       });
-    } catch (error: any) {
-      log(`Registration error: ${error}`, 'auth');
-      console.error(`Registration error:`, error);
-      res.status(500).json({ message: `Registration failed: ${error.message || 'Unknown error'}` });
+
+      // Return user data (excluding password)
+      const { password: _, ...userData } = user.toObject();
+      res.status(201).json({ user: userData });
+    } catch (error) {
+      log("Register error:", error);
+      res.status(400).json({ message: "Invalid request" });
     }
-  });
-
-  // Login route
-  app.post("/api/login", (req, res, next) => {
-    log(`Login attempt: ${JSON.stringify(req.body)}`, 'auth');
-    
-    passport.authenticate("local", (err: any, user: any, info: any) => {
-      if (err) {
-        log(`Login error: ${err}`, 'auth');
-        return next(err);
-      }
-      
-      if (!user) {
-        log(`Login failed: ${info?.message || "Unknown reason"}`, 'auth');
-        return res.status(401).json({ message: info?.message || "Login failed" });
-      }
-      
-      log(`User authenticated: ${user.username}`, 'auth');
-      
-      req.login(user, async (err) => {
-        if (err) {
-          log(`Session error: ${err}`, 'auth');
-          return next(err);
-        }
-        
-        try {
-          // Update user status to online
-          await User.findByIdAndUpdate(user._id, { status: 'online' });
-          
-          // Return user without password
-          const userResponse = user.toObject ? user.toObject() : user;
-          const { password: _, ...userWithoutPassword } = userResponse;
-          
-          log(`Login successful: ${user.username}`, 'auth');
-          res.json(userWithoutPassword);
-        } catch (error) {
-          log(`Error after login: ${error}`, 'auth');
-          next(error);
-        }
-      });
-    })(req, res, next);
   });
 
   // Logout route
-  app.post("/api/logout", async (req, res, next) => {
-    if (req.isAuthenticated()) {
-      // Update user status to offline
-      await User.findByIdAndUpdate(req.user._id, { status: 'offline' });
+  app.post("/api/auth/logout", async (req: Request, res: Response) => {
+    try {
+      if (req.session.userId) {
+        // Update user status
+        await User.findByIdAndUpdate(req.session.userId, { status: "offline" });
+      }
+
+      req.session.destroy((err) => {
+        if (err) {
+          log("Logout error:", err);
+          return res.status(500).json({ message: "Internal server error" });
+        }
+        res.json({ message: "Logged out successfully" });
+      });
+    } catch (error) {
+      log("Logout error:", error);
+      res.status(500).json({ message: "Internal server error" });
     }
-    
-    req.logout((err) => {
-      if (err) return next(err);
-      res.sendStatus(200);
+  });
+
+  // Validate token route
+  app.get("/api/auth/validate", async (req: Request, res: Response) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Not authenticated" });
+      }
+
+      const user = await User.findById(req.session.userId);
+      if (!user) {
+        return res.status(401).json({ message: "User not found" });
+      }
+
+      const { password: _, ...userData } = user.toObject();
+      res.json({ user: userData });
+    } catch (error) {
+      log("Validate error:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Authentication middleware
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (!req.session.userId) {
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+    next();
+  });
+}
+
+export async function authenticateSocket(socket: Socket) {
+  const sessionId = socket.handshake.auth.sessionId;
+  if (!sessionId) {
+    throw new Error("No session ID provided");
+  }
+
+  const session = await new Promise<any>((resolve, reject) => {
+    socket.request.sessionStore.get(sessionId, (err, session) => {
+      if (err) reject(err);
+      else resolve(session);
     });
   });
 
-  // Get current user route
-  app.get("/api/user", (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ message: "Not authenticated" });
-    }
-    res.json(req.user);
-  });
+  if (!session || !session.userId) {
+    throw new Error("Invalid session");
+  }
+
+  const user = await User.findById(session.userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  return user;
 }

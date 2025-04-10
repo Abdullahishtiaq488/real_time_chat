@@ -1,115 +1,148 @@
-import { useEffect, useState } from "react";
-import { useParams } from "wouter";
+import { useState, useEffect } from "react";
+import { useRoute, useLocation } from "wouter";
 import { useSocket } from "@/context/SocketContext";
 import { useAuth } from "@/context/AuthContext";
-import Sidebar from "@/components/Sidebar";
-import ChatList from "@/components/ChatList";
 import ChatArea from "@/components/ChatArea";
-import { Separator } from "@/components/ui/separator";
-import { Menu } from "lucide-react";
+import Sidebar from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
+import {
+  Menu,
+  Search,
+  LogOut,
+  Settings,
+  UserPlus,
+  MessageSquare,
+  User,
+  X
+} from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export default function ChatPage() {
-  const params = useParams<{ id?: string }>();
-  const { chats, setCurrentChat, currentChat } = useSocket();
-  const { user, logoutMutation } = useAuth();
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [, params] = useRoute("/chat/:id");
+  const [location, navigate] = useLocation();
+  const { user, isAuthenticated, logout } = useAuth();
+  const { selectChat, currentChat, isConnected } = useSocket();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // Set current chat based on URL param
+  // Check if we're on mobile
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Handle window resize
   useEffect(() => {
-    if (params.id && chats.length > 0) {
-      const chat = chats.find(c => c._id === params.id);
-      if (chat) {
-        setCurrentChat(chat);
+    const checkIfMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+      if (window.innerWidth >= 768) {
+        setIsSidebarOpen(true);
+      } else {
+        setIsSidebarOpen(false);
       }
-    } else if (chats.length > 0 && !currentChat) {
-      // Select first chat if none is selected
-      setCurrentChat(chats[0]);
-    }
-  }, [params.id, chats, setCurrentChat, currentChat]);
+    };
 
-  // If viewing a chat on mobile, show the chat view
+    checkIfMobile();
+    window.addEventListener("resize", checkIfMobile);
+
+    return () => {
+      window.removeEventListener("resize", checkIfMobile);
+    };
+  }, []);
+
+  // Select chat from URL
   useEffect(() => {
-    if (params.id) {
-      setMobileChatOpen(true);
+    if (params?.id && params.id !== "new" && params.id !== "add-user") {
+      try {
+        // Clean up any non-alphanumeric characters
+        const chatId = params.id.replace(/[^a-zA-Z0-9]/g, "");
+        if (chatId && selectChat) {
+          selectChat(chatId);
+        }
+      } catch (error) {
+        console.error("Error selecting chat:", error);
+      }
     }
-  }, [params.id]);
+  }, [params?.id, selectChat]);
 
-  const toggleMobileMenu = () => {
-    setMobileMenuOpen(!mobileMenuOpen);
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!isAuthenticated) {
+      navigate("/login");
+    }
+  }, [isAuthenticated, navigate]);
+
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      await logout();
+      window.location.href = "/auth";
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
   };
 
+  const toggleSidebar = () => {
+    setIsSidebarOpen(!isSidebarOpen);
+  };
+
+  if (!isAuthenticated) {
+    return null;
+  }
+
   return (
-    <div className="h-screen flex overflow-hidden bg-gray-50">
-      {/* Sidebar - Always visible on desktop, collapsible on mobile */}
-      <Sidebar 
-        user={user}
-        onLogout={() => logoutMutation.mutate()}
-        className={`${mobileMenuOpen ? 'block' : 'hidden'} md:block`}
+    <div className="flex flex-col h-screen bg-[#eae6df]">
+      {/* Background pattern */}
+      <div
+        className="absolute inset-0 opacity-5 z-0"
+        style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z' fill='%23000000' fill-opacity='0.2' fill-rule='evenodd'/%3E%3C/svg%3E")`,
+          backgroundSize: '300px',
+        }}
       />
 
-      {/* Chat list - Always visible on desktop, hidden when viewing a chat on mobile */}
-      <ChatList 
-        chats={chats}
-        currentChat={currentChat}
-        className={`${mobileChatOpen ? 'hidden' : 'block'} md:block`}
-      />
+      {/* Mobile Header (visible only on mobile) */}
+      {isMobile && (
+        <div className="flex items-center justify-between p-3 bg-[#008069] text-white z-10 md:hidden">
+          <div className="flex items-center">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-white mr-2 hover:bg-white/10"
+              onClick={toggleSidebar}
+            >
+              {isSidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </Button>
+            <h1 className="text-lg font-medium">LiveChat Connect</h1>
+          </div>
 
-      {/* Chat area - Always visible on desktop, only visible when viewing a chat on mobile */}
-      <ChatArea 
-        className={`${mobileChatOpen ? 'block' : 'hidden'} md:block`}
-        onBackClick={() => setMobileChatOpen(false)}
-      />
+          {!isSidebarOpen && currentChat && (
+            <div className="text-sm truncate max-w-[150px]">
+              {currentChat.name}
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* Mobile navigation bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex justify-around py-2 md:hidden">
-        <Button 
-          variant="ghost" 
-          size="icon"
-          onClick={toggleMobileMenu}
-          className={mobileMenuOpen ? "text-primary" : "text-gray-500"}
+      <div className="flex flex-1 overflow-hidden relative z-10">
+        {/* Sidebar */}
+        <div
+          className={`transition-all duration-300 ${isSidebarOpen
+            ? 'w-full md:w-[380px] md:max-w-[380px]'
+            : 'w-0 max-w-0'
+            } h-full overflow-hidden shadow-lg`}
         >
-          <Menu className="h-6 w-6" />
-        </Button>
-        
-        <Button 
-          variant="ghost" 
-          size="icon"
-          onClick={() => {
-            setMobileChatOpen(false);
-            setMobileMenuOpen(false);
-          }}
-          className={!mobileChatOpen ? "text-primary" : "text-gray-500"}
+          <Sidebar
+            className="h-full"
+            isMobile={isMobile}
+            onClose={() => setIsSidebarOpen(false)}
+          />
+        </div>
+
+        {/* Main Content */}
+        <div
+          className={`flex-1 transition-all duration-300 ${isMobile && isSidebarOpen ? 'hidden' : 'flex flex-col'
+            }`}
         >
-          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-          </svg>
-        </Button>
-        
-        <Button 
-          variant="ghost" 
-          size="icon"
-          className="text-gray-500"
-        >
-          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-          </svg>
-        </Button>
-        
-        <div className="relative">
-          <Button 
-            variant="ghost" 
-            size="icon"
-            className="relative"
-          >
-            {user?.username && (
-              <div className="h-8 w-8 bg-primary/20 text-primary rounded-full flex items-center justify-center">
-                {user.username.charAt(0).toUpperCase()}
-              </div>
-            )}
-            <span className="absolute top-0 right-0 h-3 w-3 rounded-full bg-green-500 border-2 border-white"></span>
-          </Button>
+          <ChatArea
+            onBackClick={isMobile ? () => setIsSidebarOpen(true) : undefined}
+          />
         </div>
       </div>
     </div>

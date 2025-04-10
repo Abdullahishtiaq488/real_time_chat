@@ -1,111 +1,98 @@
-import { format } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 import { Message } from "@shared/schema";
-import { CheckCheck, Image, FileIcon, Play } from "lucide-react";
-import { useState, useEffect } from "react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { cn } from "@/lib/utils";
+import { CheckCheck } from "lucide-react";
 
 interface MessageItemProps {
   message: Message;
   isOwnMessage: boolean;
+  showAvatar?: boolean;
+  isLastInGroup?: boolean;
 }
 
-export default function MessageItem({ message, isOwnMessage }: MessageItemProps) {
-  const [isHovered, setIsHovered] = useState(false);
-  const [isLongMessage, setIsLongMessage] = useState(false);
+export default function MessageItem({
+  message,
+  isOwnMessage,
+  showAvatar = true,
+  isLastInGroup = true
+}: MessageItemProps) {
+  const isSystemMessage = message.type === "system";
+  const formattedTime = formatMessageTime(message.createdAt);
 
-  useEffect(() => {
-    // Check if message is longer than 100 characters
-    setIsLongMessage(message.content.length > 100);
-  }, [message.content]);
+  // System messages are centered and have a distinct style
+  if (isSystemMessage) {
+    return (
+      <div className="flex justify-center my-4">
+        <div className="bg-gray-100 bg-opacity-70 backdrop-blur-sm px-4 py-1.5 rounded-full shadow-sm">
+          <p className="text-xs text-gray-500 font-medium">{message.content}</p>
+        </div>
+      </div>
+    );
+  }
 
-  const formatTime = (timestamp: string | Date | null) => {
-    if (!timestamp) return "";
-    // Use createdAt for MongoDB compatibility
-    const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
-    return format(date, "h:mm a");
-  };
-
-  // Function to detect if content has image, video or file links
-  const getContentType = () => {
-    const content = message.content.toLowerCase();
-    
-    if (content.includes('.jpg') || content.includes('.png') || content.includes('.gif') || content.includes('image/')) {
-      return 'image';
-    } else if (content.includes('.mp4') || content.includes('.mov') || content.includes('.avi') || content.includes('video/')) {
-      return 'video';
-    } else if (content.includes('.pdf') || content.includes('.doc') || content.includes('.xls')) {
-      return 'file';
+  // Calculate bubble classes based on ownership and position in group
+  const bubbleClasses = cn(
+    "py-2 px-3 max-w-[85%] break-words shadow-sm",
+    {
+      "bg-[#e7ffdb] text-gray-800 rounded-tl-lg rounded-bl-lg": isOwnMessage,
+      "bg-white text-gray-800 rounded-tr-lg rounded-br-lg": !isOwnMessage,
+      "rounded-br-lg": isOwnMessage && isLastInGroup,
+      "rounded-bl-lg": !isOwnMessage && isLastInGroup,
+      "rounded-tr-lg": isOwnMessage && !isLastInGroup,
+      "rounded-tl-lg": !isOwnMessage && !isLastInGroup,
     }
-    
-    return 'text';
-  };
-
-  // Get icon based on content type
-  const getContentIcon = () => {
-    const type = getContentType();
-    
-    if (type === 'image') {
-      return <Image className="h-4 w-4 text-primary" />;
-    } else if (type === 'video') {
-      return <Play className="h-4 w-4 text-primary" />;
-    } else if (type === 'file') {
-      return <FileIcon className="h-4 w-4 text-primary" />;
-    }
-    
-    return null;
-  };
-
-  // Get content type indicator
-  const contentTypeIcon = getContentIcon();
+  );
 
   return (
-    <div 
-      className={`flex items-end ${isOwnMessage ? 'justify-end' : ''} mb-3 group`}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      {!isOwnMessage && (
-        <div className="relative mr-2 flex-shrink-0">
-          {/* Using default avatar since we don't have sender avatar in MongoDB schema */}
-          <div className="h-8 w-8 bg-gradient-to-br from-gray-200 to-gray-300 rounded-full flex items-center justify-center uppercase text-gray-600 shadow-sm">
-            {"?"}
-          </div>
+    <div className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} mb-1`}>
+      {!isOwnMessage && showAvatar ? (
+        <div className="mr-1.5 pt-1">
+          <Avatar className="h-8 w-8">
+            {message.senderAvatar ? (
+              <AvatarImage src={message.senderAvatar} alt={message.senderName || 'User'} />
+            ) : (
+              <AvatarFallback className="bg-gradient-to-br from-purple-600 to-indigo-600 text-white text-xs">
+                {message.senderName?.charAt(0) || 'U'}
+              </AvatarFallback>
+            )}
+          </Avatar>
         </div>
-      )}
-      
-      <div className={`max-w-xs md:max-w-md ${isOwnMessage ? 'text-right' : ''}`}>
-        {!isOwnMessage && (
-          <div className="ml-1 mb-1">
-            <span className="text-xs font-medium text-gray-700">User</span>
-          </div>
+      ) : !isOwnMessage ? (
+        <div className="w-8 mr-1.5"></div>
+      ) : null}
+
+      <div className={bubbleClasses}>
+        {!isOwnMessage && message.senderName && showAvatar && (
+          <p className="text-xs font-medium text-indigo-600 mb-1">
+            {message.senderName}
+          </p>
         )}
-        
-        <div 
-          className={`relative ${
-            isOwnMessage 
-              ? 'bg-gradient-to-r from-primary/90 to-primary/70 text-white rounded-tl-2xl rounded-bl-2xl rounded-tr-sm rounded-br-2xl' 
-              : 'bg-white text-gray-800 rounded-tr-2xl rounded-br-2xl rounded-tl-sm rounded-bl-2xl'
-          } px-4 py-2 shadow-sm border border-gray-100`}
-        >
-          {contentTypeIcon && (
-            <div className="absolute -top-3 -left-1 bg-white p-1 rounded-full shadow-sm border border-gray-200">
-              {contentTypeIcon}
-            </div>
-          )}
-          
-          <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
-        </div>
-        
-        <div className={`flex items-center ${isOwnMessage ? 'justify-end' : 'justify-start'} space-x-1 mt-1 px-1`}>
-          <span className="text-xs text-gray-500 opacity-70 group-hover:opacity-100">
-            {formatTime(message.createdAt || null)}
-          </span>
+
+        <div className="relative">
+          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+
+          <div className={`flex items-center text-[10px] text-gray-500 ${isOwnMessage ? 'justify-end' : 'justify-start'} mt-1 gap-1`}>
+            <span>{formattedTime}</span>
           {isOwnMessage && (
-            <div className="flex items-center">
-              <CheckCheck className={`h-3.5 w-3.5 text-gray-400`} />
+              <CheckCheck className="h-3 w-3 text-blue-500" />
+            )}
             </div>
-          )}
         </div>
       </div>
     </div>
   );
+}
+
+function formatMessageTime(timestamp: Date | string | undefined): string {
+  if (!timestamp) return "";
+
+  try {
+    const date = new Date(timestamp);
+    // Use hours and minutes in 12-hour format with AM/PM
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+  } catch (error) {
+    console.error("Error formatting message time:", error);
+    return "";
+  }
 }

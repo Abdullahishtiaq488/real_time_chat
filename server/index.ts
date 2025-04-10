@@ -1,83 +1,88 @@
-import express, { type Request, Response, NextFunction } from "express";
-import path from "path";
-import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
-import { connectDB } from "./db";
+import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import session from "express-session";
+import MongoStore from "connect-mongo";
+import cors from "cors";
+import dotenv from "dotenv";
+import mongoose from "mongoose";
+import { log } from "./utils/logger";
+import { setupAuth } from "./auth";
+import { setupSocket } from "./socket";
+import { setupRoutes } from "./routes";
+import { setupStorage } from "./storage";
+import { createTestUserIfNeeded } from "./db";
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
+const httpServer = createServer(app);
+
+// Configure CORS
+app.use(cors({
+  origin: process.env.CLIENT_URL || "http://localhost:5000",
+  credentials: true,
+}));
+
+// Configure session
+app.use(session({
+  secret: process.env.SESSION_SECRET || "your-secret-key",
+  resave: false,
+  saveUninitialized: false,
+  store: MongoStore.create({
+    mongoUrl: process.env.MONGODB_URI,
+    ttl: 24 * 60 * 60, // 1 day
+  }),
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000, // 1 day
+  },
+}));
+
+// Parse JSON bodies
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
 
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
-
-// Request logging middleware
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
-      }
-
-      log(logLine);
-    }
+// Setup MongoDB connection
+mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/livechat")
+  .then(() => {
+    log("Connected to MongoDB");
+    return createTestUserIfNeeded();
+  })
+  .catch((error) => {
+    log("MongoDB connection error:", error);
+    process.exit(1);
   });
 
-  next();
+// Setup Socket.IO
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.CLIENT_URL || "http://localhost:5000",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
 });
 
-(async () => {
-  try {
-    // Connect to MongoDB
-    await connectDB();
-    log("MongoDB connected successfully");
+// Setup authentication
+setupAuth(app);
 
-    // Register routes and create HTTP server
-    const server = await registerRoutes(app);
+// Setup storage
+setupStorage(app);
 
-    // Error handling middleware
-    app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-      console.error("Error:", err);
-      const status = err.status || err.statusCode || 500;
-      const message = err.message || "Internal Server Error";
+// Setup routes
+setupRoutes(app);
 
-      res.status(status).json({ message });
-    });
+// Setup socket handlers
+setupSocket(io);
 
-    // Setup Vite for development or serve static files for production
-    if (app.get("env") === "development") {
-      await setupVite(app, server);
-    } else {
-      serveStatic(app);
-    }
+// Error handling middleware
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  log("Error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
 
-    // Start the server
-    const port = process.env.PORT || 5000;
-    server.listen({
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    }, () => {
-      log(`Server running on port ${port}`);
-    });
-  } catch (error) {
-    log(`Server failed to start: ${error}`, "error");
-    process.exit(1);
-  }
-})();
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, () => {
+  log(`Server running on port ${PORT}`);
+});
